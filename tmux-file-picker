@@ -1,0 +1,915 @@
+#!/usr/bin/env python3
+"""tmux-file-picker — one-file Python replacement for the shell scripts."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import traceback
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import NoReturn
+
+
+# --------------------------------------------------------------------------- #
+# Core data structures
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class ParsedTarget:
+    path: str
+    line: str = ""
+    col: str = ""
+
+
+@dataclass
+class FzfResult:
+    query: str = ""
+    key: str = ""
+    selection: str = ""
+
+
+@dataclass
+class DebugState:
+    pane_path: str = ""
+    pane_id: str = ""
+    source_pane_path: str = ""
+    search_root: str = ""
+    indexed_count: int = 0
+    candidate_count: int = 0
+    query: str = ""
+    key: str = ""
+    selection: str = ""
+    resolved_path: str = ""
+    mode: str = ""
+    line: str = ""
+    screen_line_count: int = 0
+    visible_only: bool = True
+    screen_text: str = field(repr=False, default="")
+    indexed_files: list[str] = field(default_factory=list)
+    candidates: list[str] = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Logging
+# --------------------------------------------------------------------------- #
+
+def log_path() -> Path:
+    configured = os.environ.get("TMUX_FILE_PICKER_LOG")
+    if configured:
+        return Path(configured)
+    cache_dir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return cache_dir / "tmux-file-picker" / "tmux-file-picker.log"
+
+
+def log_event(event: str, **data: object) -> None:
+    try:
+        path = log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
+        payload = {
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "event": event,
+            **data,
+        }
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, default=str) + "\n")
+        path.chmod(0o600)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# Path / pane helpers
+# --------------------------------------------------------------------------- #
+
+def resolve_source_pane_path(pane_path: Path, pane_id: str) -> Path:
+    if pane_id:
+        try:
+            result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_current_path}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            p = result.stdout.strip()
+            if p and Path(p).is_dir():
+                return Path(p)
+        except FileNotFoundError:
+            pass
+    return pane_path
+
+
+def find_search_root(pane_path: Path) -> Path:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(pane_path), "rev-parse", "--show-toplevel"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        p = result.stdout.strip()
+        if p and Path(p).is_dir():
+            return Path(p)
+    except FileNotFoundError:
+        pass
+    return pane_path
+
+
+# --------------------------------------------------------------------------- #
+# Pane capture
+# --------------------------------------------------------------------------- #
+
+def capture_pane_text(pane_id: str) -> str:
+    cmd = ["tmux", "capture-pane", "-pJ"]
+
+    # If the source pane is in copy mode, capture the scrolled viewport
+    # instead of the live bottom content. This only works if the binding does
+    # not cancel copy mode before launching this script.
+    if pane_id:
+        mode_result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_in_mode}"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if mode_result.stdout.strip() == "1":
+            scroll_result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", pane_id, "#{scroll_position}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            height_result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_height}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            scroll_str = scroll_result.stdout.strip()
+            height_str = height_result.stdout.strip()
+            if scroll_str.isdigit() and height_str.isdigit():
+                scroll = int(scroll_str)
+                height = int(height_str)
+                if scroll > 0 and height > 0:
+                    if scroll < height:
+                        end = str(height - scroll - 1)
+                    else:
+                        end = f"-{scroll - height + 1}"
+                    cmd.extend(["-S", f"-{scroll}", "-E", end])
+                    log_event(
+                        "capture_scrollback_viewport",
+                        pane_id=pane_id,
+                        scroll_position=scroll,
+                        pane_height=height,
+                        start=f"-{scroll}",
+                        end=end,
+                    )
+
+        cmd.extend(["-t", pane_id])
+
+    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    return result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# Text cleaning
+# --------------------------------------------------------------------------- #
+
+ANSI_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    text = ANSI_RE.sub("", text)
+    text = ANSI_CSI_RE.sub("", text)
+    return text
+
+
+def clean_visible_line(line: str) -> str:
+    s = line.strip()
+    s = re.sub(r"^(?:[-*+>•]+|\d+[.)])\s*", "", s)
+    s = s.strip().strip("`'\"").strip()
+    s = s.rstrip(".,;:")
+    return s.strip()
+
+
+# --------------------------------------------------------------------------- #
+# File indexing
+# --------------------------------------------------------------------------- #
+
+def list_repo_files(search_root: Path) -> list[str]:
+    try:
+        result = subprocess.run(
+            [
+                "fd",
+                "--type",
+                "f",
+                "--type",
+                "d",
+                "--hidden",
+                "--follow",
+                "--exclude",
+                ".git",
+                ".",
+            ],
+            cwd=search_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
+
+
+# --------------------------------------------------------------------------- #
+# Candidate extraction
+# --------------------------------------------------------------------------- #
+
+def extract_visible_candidates(
+    screen_text: str,
+    repo_paths: list[str],
+    search_root: Path,
+    pane_path: Path,
+) -> list[str]:
+    home = Path.home()
+    raw_lines = screen_text.splitlines()
+
+    lines: list[str] = []
+    line_pos: dict[str, int] = {}
+
+    for i, raw in enumerate(raw_lines):
+        variants = {raw.strip(), clean_visible_line(raw)}
+        variants.update(
+            m.group(1).strip() for m in re.finditer(r"[`'\"]([^`'\"]+)[`'\"]", raw)
+        )
+        for v in variants:
+            if v and v not in line_pos:
+                line_pos[v] = i
+                lines.append(v)
+
+    joined = "\n".join(lines)
+    matches: dict[str, int] = {}
+
+    def add(display: str, pos: int) -> None:
+        if not display:
+            return
+        prev = matches.get(display)
+        if prev is None or pos < prev:
+            matches[display] = pos
+
+    def home_display(abs_path: str) -> str:
+        if abs_path == str(home):
+            return "~"
+        p = Path(abs_path)
+        try:
+            rel = p.relative_to(home)
+            return f"~/{rel}"
+        except ValueError:
+            return abs_path
+
+    def add_resolved(candidate: str, pos: int) -> None:
+        c = candidate.strip().strip("`'\"").rstrip(".,;:")
+        if not c:
+            return
+
+        # Strip line number suffix for existence checking
+        base_c = c
+        line_num = ""
+        line_m = re.match(r'^(.+?):(\d+)(?::\d+)?$', c)
+        if line_m:
+            base_c = line_m.group(1)
+            line_num = line_m.group(2)
+
+        expanded_candidates: list[str] = []
+        expanded = os.path.expanduser(base_c)
+        if base_c.startswith(("./", "../")):
+            expanded_candidates.append(os.path.abspath(os.path.join(pane_path, base_c)))
+        elif os.path.isabs(expanded):
+            expanded_candidates.append(expanded)
+        elif "/" in base_c and "://" not in base_c:
+            expanded_candidates.append(os.path.abspath(os.path.join(pane_path, base_c)))
+            expanded_candidates.append(os.path.abspath(os.path.join(search_root, base_c)))
+        else:
+            return
+
+        root_str = str(search_root)
+        for expanded in expanded_candidates:
+            if not os.path.exists(expanded):
+                continue
+            if expanded.startswith(root_str + os.sep):
+                display = os.path.relpath(expanded, root_str)
+            else:
+                display = home_display(expanded)
+            if line_num:
+                display = f"{display}:{line_num}"
+            add(display, pos)
+            return
+
+    # Existing absolute/~/relative paths visible on screen
+    pathish = re.compile(r"(?<!\S)(?:~|/|\./|\.\./)[^\s`'\"<>|]+")
+    relative_pathish = re.compile(r"(?<!\S)(?![A-Za-z][A-Za-z0-9+.-]*://)[^\s`'\"<>|]+/[^\s`'\"<>|]+")
+    for i, raw in enumerate(raw_lines):
+        cleaned = clean_visible_line(raw)
+        if cleaned.startswith(("~/", "/", "./", "../")) or ("/" in cleaned and "://" not in cleaned):
+            add_resolved(cleaned, i)
+        for m in pathish.finditer(raw):
+            add_resolved(m.group(0), i)
+        for m in relative_pathish.finditer(raw):
+            add_resolved(m.group(0), i)
+
+    # Authoritative repo match
+    for path in repo_paths:
+        base = os.path.basename(path)
+        abs_path = os.path.join(str(search_root), path)
+        variants = [path, "./" + path, abs_path, home_display(abs_path)]
+
+        if path.endswith(".md"):
+            variants.append(path[:-3])
+            if base.endswith(".md"):
+                variants.append(base[:-3])
+
+        for variant in variants:
+            pos = joined.find(variant)
+            if pos >= 0:
+                after = joined[pos + len(variant):]
+                line_m = re.match(r':(\d+)(?::\d+)?', after)
+                display = f"{path}:{line_m.group(1)}" if line_m else path
+                add(display, pos)
+                break
+
+        base_variants = [base]
+        if base.endswith(".md"):
+            base_variants.append(base[:-3])
+        for variant in base_variants:
+            if variant in line_pos:
+                add(path, line_pos[variant])
+                break
+            # Also match basename with line suffix (e.g., "main.py:12")
+            for line_key, line_idx in line_pos.items():
+                if line_key.startswith(variant + ":"):
+                    line_m = re.match(rf'{re.escape(variant)}:(\d+)(?::\d+)?', line_key)
+                    display = f"{path}:{line_m.group(1)}" if line_m else path
+                    add(display, line_idx)
+                    break
+            else:
+                continue
+            break
+
+    return [
+        display for display, _ in sorted(matches.items(), key=lambda item: (item[1], item[0].lower()))
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Target parsing
+# --------------------------------------------------------------------------- #
+
+TARGET_RE = re.compile(r"^(.+?):([0-9]+)(:[0-9]+)?:?$")
+TARGET_CTX_RE = re.compile(r"^(.+)-([0-9]+)-$")
+
+
+def parse_selected_target(text: str) -> ParsedTarget:
+    t = text.split("\n", 1)[0].rstrip("\r").strip()
+    t = t.strip("`'\"").strip()
+    t = t.rstrip(".,;:").strip()
+    if not t:
+        return ParsedTarget(path="")
+
+    file_target = t
+    line_target = ""
+
+    m = TARGET_RE.match(t)
+    if m:
+        file_target = m.group(1)
+        line_target = m.group(2)
+    else:
+        m = TARGET_CTX_RE.match(t)
+        if m:
+            file_target = m.group(1)
+            line_target = m.group(2)
+
+    return ParsedTarget(path=file_target, line=line_target)
+
+
+# --------------------------------------------------------------------------- #
+# Path resolution
+# --------------------------------------------------------------------------- #
+
+def resolve_existing_path(path_text: str, pane_path: Path, search_root: Path) -> Path | None:
+    if path_text == "~":
+        expanded = Path.home()
+        if expanded.exists():
+            return expanded
+        return None
+
+    if path_text.startswith("~/"):
+        expanded = Path.home() / path_text[2:]
+        if expanded.exists():
+            return expanded
+        return None
+
+    if path_text.startswith("/"):
+        p = Path(path_text)
+        if p.exists():
+            return p
+        return None
+
+    # Relative: try pane_path first, then search_root
+    for base in (pane_path, search_root):
+        p = base / path_text
+        if p.exists():
+            return p
+
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# fzf
+# --------------------------------------------------------------------------- #
+
+def parse_fzf_result(stdout: str) -> FzfResult:
+    if not stdout:
+        return FzfResult()
+    lines = stdout.split("\n")
+    query = lines[0] if lines else ""
+    if len(lines) == 1:
+        return FzfResult(query=query)
+
+    rest = lines[1:]
+    first_rest = rest[0]
+    remaining = "\n".join(rest[1:]) if len(rest) > 1 else ""
+
+    if first_rest in ("enter", "ctrl-o", "ctrl-y"):
+        return FzfResult(query=query, key=first_rest, selection=remaining)
+    if first_rest == "":
+        # Interactive Enter with --expect prints: query, blank key line, selection.
+        return FzfResult(query=query, selection=remaining)
+    return FzfResult(query=query, selection=first_rest)
+
+
+def run_fzf_visible(
+    candidates: list[str],
+    search_root: Path,
+    header_label: str = "visible files in",
+) -> FzfResult | None:
+    input_lines = [c for c in candidates if c.strip()]
+    input_text = "\n".join(input_lines)
+    if input_text:
+        input_text += "\n"
+    try:
+        proc = subprocess.run(
+            [
+                "fzf",
+                "--reverse",
+                "--print-query",
+                "--header",
+                f"{header_label}: {search_root} | enter=nvim  ctrl-o=default app  ctrl-y=annotate",
+                "--expect",
+                "enter,ctrl-o,ctrl-y",
+            ],
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        print("tmux-file-picker: fzf not found", file=sys.stderr)
+        return None
+
+    if proc.returncode >= 2:
+        return None
+    return parse_fzf_result(proc.stdout)
+
+
+def run_fallback_picker(search_root: Path, query: str) -> str | None:
+    files = list_repo_files(search_root)
+    input_text = "\n".join(f for f in files if f.strip())
+    if input_text:
+        input_text += "\n"
+    try:
+        proc = subprocess.run(
+            [
+                "fzf",
+                "--reverse",
+                "--select-1",
+                "--exit-0",
+                "--query",
+                query,
+                "--header",
+                f"find file in: {search_root} | query: {query}",
+            ],
+            cwd=search_root,
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        print("tmux-file-picker: fzf not found", file=sys.stderr)
+        return None
+    if proc.returncode >= 2:
+        return None
+    selected = proc.stdout.strip().split("\n")[0] if proc.stdout.strip() else ""
+    return selected if selected else None
+
+
+# --------------------------------------------------------------------------- #
+# Opening
+# --------------------------------------------------------------------------- #
+
+def choose_default_opener() -> list[str]:
+    env = os.environ.get("TMUX_FILE_PICKER_OPENER", "")
+    if env:
+        return shlex.split(env)
+
+    if sys.platform == "darwin":
+        return ["open"]
+
+    # WSL detection
+    try:
+        with open("/proc/version", "r") as f:
+            if "microsoft" in f.read().lower():
+                return ["wslview"]
+    except FileNotFoundError:
+        pass
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return ["wslview"]
+
+    return ["xdg-open"]
+
+
+def _check_opener(opener: list[str]) -> None:
+    if not opener:
+        sys.exit("tmux-file-picker: no opener configured")
+    exe = shutil.which(opener[0])
+    if not exe:
+        sys.exit(f"tmux-file-picker: opener not found: {opener[0]}")
+
+
+def open_with_default_app(path: Path) -> NoReturn:
+    opener = choose_default_opener()
+    _check_opener(opener)
+    os.execvp(opener[0], opener + [str(path)])
+
+
+def open_in_nvim_split(path: Path, line: str, pane_path: Path, pane_id: str) -> NoReturn:
+    cmd = ["nvim", f"+{line}", str(path)] if line else ["nvim", str(path)]
+    inner = shlex.join(cmd)
+
+    tmux_cmd = ["tmux", "split-window"]
+    if pane_id:
+        tmux_cmd += ["-t", pane_id]
+    tmux_cmd += ["-h", "-c", str(pane_path), inner]
+
+    os.execvp(tmux_cmd[0], tmux_cmd)
+
+
+def send_annotate_command(pane_id: str, file_path: str) -> None:
+    quoted_path = shlex.quote(file_path)
+    cmd_text = f"/plannotator-annotate {quoted_path}"
+    subprocess.run(
+        ["tmux", "send-keys", "-t", pane_id, "-l", cmd_text],
+        check=False,
+    )
+    subprocess.run(
+        ["tmux", "send-keys", "-t", pane_id, "Enter"],
+        check=False,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Debug
+# --------------------------------------------------------------------------- #
+
+def debug_dump(state: DebugState) -> None:
+    debug_dir = os.environ.get("TMUX_FILE_PICKER_DEBUG_DIR", "")
+    if not debug_dir:
+        return
+
+    run_id = f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    run_dir = Path(debug_dir) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.chmod(0o700)
+
+    (run_dir / "screen.txt").write_text(state.screen_text, encoding="utf-8")
+    (run_dir / "files.txt").write_text("\n".join(state.indexed_files), encoding="utf-8")
+    (run_dir / "candidates.txt").write_text("\n".join(state.candidates), encoding="utf-8")
+
+    fzf_data = {
+        "query": state.query,
+        "key": state.key,
+        "selection": state.selection,
+    }
+    (run_dir / "fzf.json").write_text(json.dumps(fzf_data, indent=2), encoding="utf-8")
+
+    decision = {
+        "pane_path": state.pane_path,
+        "pane_id": state.pane_id,
+        "source_pane_path": state.source_pane_path,
+        "search_root": state.search_root,
+        "indexed_count": state.indexed_count,
+        "candidate_count": state.candidate_count,
+        "screen_line_count": state.screen_line_count,
+        "visible_only": state.visible_only,
+        "query": state.query,
+        "key": state.key,
+        "selection": state.selection,
+        "resolved_path": state.resolved_path,
+        "mode": state.mode,
+        "line": state.line,
+    }
+    (run_dir / "decision.json").write_text(json.dumps(decision, indent=2), encoding="utf-8")
+
+    for f in run_dir.iterdir():
+        f.chmod(0o600)
+
+    print(f"tmux-file-picker debug: {run_dir}", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------- #
+# Command handlers
+# --------------------------------------------------------------------------- #
+
+def _open_target(
+    mode: str,
+    target_text: str,
+    pane_path: Path,
+    pane_id: str,
+    search_root: Path,
+    state: DebugState,
+    inline: bool = True,
+) -> None:
+    parsed = parse_selected_target(target_text)
+    if not parsed.path:
+        debug_dump(state)
+        return
+
+    state.mode = mode
+    state.line = parsed.line
+
+    resolved = resolve_existing_path(parsed.path, pane_path, search_root)
+    if not resolved:
+        debug_dump(state)
+        return
+
+    state.resolved_path = str(resolved)
+    debug_dump(state)
+
+    if mode == "default":
+        open_with_default_app(resolved)
+    elif mode == "annotate":
+        if resolved.is_dir() or (not resolved.exists() and "." not in parsed.path):
+            subprocess.run(
+                ["tmux", "display-message", "tmux-file-picker: annotate is for files only"],
+                check=False,
+            )
+            return
+        send_annotate_command(pane_id, str(resolved))
+    else:
+        open_in_nvim_split(resolved, parsed.line, pane_path, pane_id)
+
+
+def _open_fallback_popup(
+    mode: str, query: str, line: str, pane_path: Path, pane_id: str
+) -> NoReturn:
+    cmd = [
+        sys.argv[0],
+        "fallback",
+        "--mode",
+        mode,
+        "--pane-path",
+        str(pane_path),
+        "--pane-id",
+        pane_id,
+        "--query",
+        query,
+    ]
+    if line:
+        cmd.extend(["--line", line])
+    inner = shlex.join(cmd)
+
+    tmux_cmd = ["tmux", "display-popup"]
+    if pane_id:
+        tmux_cmd += ["-t", pane_id]
+    tmux_cmd += ["-E", "-w", "80%", "-h", "60%", inner]
+
+    os.execvp(tmux_cmd[0], tmux_cmd)
+
+
+def cmd_pick(args: argparse.Namespace) -> None:
+    pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
+    pane_id = args.pane_id or ""
+    source_pane_path = resolve_source_pane_path(pane_path, pane_id)
+    search_root = find_search_root(source_pane_path)
+
+    screen_text = capture_pane_text(pane_id)
+    screen_text = strip_ansi(screen_text)
+    repo_paths = list_repo_files(search_root)
+    candidates = extract_visible_candidates(
+        screen_text, repo_paths, search_root, source_pane_path
+    )
+
+    state = DebugState(
+        pane_path=str(pane_path),
+        pane_id=pane_id,
+        source_pane_path=str(source_pane_path),
+        search_root=str(search_root),
+        indexed_count=len(repo_paths),
+        candidate_count=len(candidates),
+        screen_line_count=len(screen_text.splitlines()),
+        visible_only=True,
+        screen_text=screen_text,
+        indexed_files=repo_paths,
+        candidates=candidates,
+    )
+
+    if not candidates:
+        subprocess.run(
+            ["tmux", "display-message", "No visible files/folders found"],
+            check=False,
+        )
+        log_event(
+            "pick_empty",
+            pane_id=pane_id,
+            candidate_count=0,
+        )
+        debug_dump(state)
+        return
+
+    log_event(
+        "pick_start",
+        pane_path=str(pane_path),
+        pane_id=pane_id,
+        source_pane_path=str(source_pane_path),
+        search_root=str(search_root),
+        indexed_count=len(repo_paths),
+        candidate_count=len(candidates),
+    )
+
+    fzf_result = run_fzf_visible(candidates, search_root)
+    if fzf_result is None:
+        log_event("pick_cancel_or_empty", pane_id=pane_id, candidate_count=len(candidates))
+        debug_dump(state)
+        return
+
+    state.query = fzf_result.query
+    state.key = fzf_result.key
+    state.selection = fzf_result.selection
+
+    selection = fzf_result.selection
+    if not selection:
+        debug_dump(state)
+        return
+
+    key = fzf_result.key or "enter"
+    if key == "ctrl-o":
+        mode = "default"
+    elif key == "ctrl-y":
+        mode = "annotate"
+    else:
+        mode = "nvim"
+
+    _open_target(mode, selection, source_pane_path, pane_id, search_root, state=state)
+
+
+def cmd_open(args: argparse.Namespace) -> None:
+    pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
+    pane_id = args.pane_id or ""
+    mode = args.mode
+    source_pane_path = resolve_source_pane_path(pane_path, pane_id)
+    search_root = find_search_root(source_pane_path)
+
+    target = sys.stdin.read()
+
+    state = DebugState(
+        pane_path=str(pane_path),
+        pane_id=pane_id,
+        source_pane_path=str(source_pane_path),
+        search_root=str(search_root),
+        mode=mode,
+    )
+
+    _open_target(mode, target, source_pane_path, pane_id, search_root, state=state)
+
+
+def cmd_fallback(args: argparse.Namespace) -> None:
+    pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
+    pane_id = args.pane_id or ""
+    mode = args.mode
+    query = args.query
+    line = args.line or ""
+    source_pane_path = resolve_source_pane_path(pane_path, pane_id)
+    search_root = find_search_root(source_pane_path)
+
+    state = DebugState(
+        pane_path=str(pane_path),
+        pane_id=pane_id,
+        source_pane_path=str(source_pane_path),
+        search_root=str(search_root),
+        mode=mode,
+        line=line,
+        query=query,
+    )
+
+    selected = run_fallback_picker(search_root, query)
+    if not selected:
+        debug_dump(state)
+        return
+
+    resolved = resolve_existing_path(selected, source_pane_path, search_root)
+    if not resolved:
+        resolved = search_root / selected
+
+    state.selection = selected
+    state.resolved_path = str(resolved)
+    debug_dump(state)
+
+    if mode == "default":
+        open_with_default_app(resolved)
+    else:
+        open_in_nvim_split(resolved, line, source_pane_path, pane_id)
+
+
+def cmd_scan(args: argparse.Namespace) -> None:
+    pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
+    pane_id = args.pane_id or ""
+    source_pane_path = resolve_source_pane_path(pane_path, pane_id)
+    search_root = find_search_root(source_pane_path)
+
+    screen_text = capture_pane_text(pane_id)
+    screen_text = strip_ansi(screen_text)
+    repo_paths = list_repo_files(search_root)
+    candidates = extract_visible_candidates(
+        screen_text, repo_paths, search_root, source_pane_path
+    )
+
+    result = {
+        "pane_id": pane_id,
+        "source_pane_path": str(source_pane_path),
+        "search_root": str(search_root),
+        "screen_line_count": len(screen_text.splitlines()),
+        "indexed_count": len(repo_paths),
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "visible_only": True,
+    }
+    print(json.dumps(result, indent=2))
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="tmux-file-picker")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    pick_parser = subparsers.add_parser("pick")
+    pick_parser.add_argument("--pane-path", required=True)
+    pick_parser.add_argument("--pane-id", required=True)
+
+    open_parser = subparsers.add_parser("open")
+    open_parser.add_argument("--mode", choices=["nvim", "default"], required=True)
+    open_parser.add_argument("--pane-path", required=True)
+    open_parser.add_argument("--pane-id", required=True)
+
+    fallback_parser = subparsers.add_parser("fallback")
+    fallback_parser.add_argument("--mode", choices=["nvim", "default"], required=True)
+    fallback_parser.add_argument("--pane-path", required=True)
+    fallback_parser.add_argument("--pane-id", required=True)
+    fallback_parser.add_argument("--query", required=True)
+    fallback_parser.add_argument("--line", default="")
+
+    scan_parser = subparsers.add_parser("scan")
+    scan_parser.add_argument("--pane-path", required=True)
+    scan_parser.add_argument("--pane-id", required=True)
+
+    args = parser.parse_args()
+    log_event("start", command=args.command, argv=sys.argv[1:])
+
+    if args.command == "pick":
+        cmd_pick(args)
+    elif args.command == "open":
+        cmd_open(args)
+    elif args.command == "fallback":
+        cmd_fallback(args)
+    elif args.command == "scan":
+        cmd_scan(args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        log_event("crash", error=str(exc), traceback=traceback.format_exc(), argv=sys.argv[1:])
+        raise
