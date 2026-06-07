@@ -21,7 +21,7 @@ Inside the picker:
 
 - `Enter` opens in a new `nvim` split.
 - `Ctrl-o` opens with the default app.
-- `Ctrl-y` annotates the selected file via Plannotator (sends `/plannotator-annotate <file>` to the source pane). Folders are blocked with a tmux message.
+- `Ctrl-y` annotates the selected file via Plannotator (sends `/plannotator-annotate <file>` to the source pane). If the source pane is in copy mode, it cancels copy mode first so the slash command reaches the prompt. Folders are blocked with a tmux message.
 
 In tmux copy mode:
 
@@ -96,4 +96,4 @@ python3 -m unittest discover -s tests
 - The picker is strict visible-screen only: it never falls back to showing all repo files.
 - `Shift+Enter` is intentionally not used because terminals/tmux/fzf often collapse it to plain `Enter`.
 - `Ctrl-o` is reliable and mnemonic: open with default app.
-- `Ctrl-y` sends `/plannotator-annotate <file>` into the source pane literally; use it only when the source pane is a Pi agent session.
+- `Ctrl-y` sends `/plannotator-annotate <file>` into the source pane literally. Copy mode is automatically cancelled before sending so the slash command reaches Pi's prompt. Use it only when the source pane is a Pi agent session.

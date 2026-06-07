@@ -574,7 +574,28 @@ def open_in_nvim_split(path: Path, line: str, pane_path: Path, pane_id: str) -> 
     os.execvp(tmux_cmd[0], tmux_cmd)
 
 
+def copy_to_clipboard(text: str) -> None:
+    try:
+        subprocess.run(["pbcopy"], input=text, text=True, check=False)
+    except FileNotFoundError:
+        pass
+
+
 def send_annotate_command(pane_id: str, file_path: str) -> None:
+    # Cancel copy mode if the source pane is in it, so the slash command
+    # reaches Pi's prompt instead of being swallowed by copy mode.
+    mode_result = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_in_mode}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if mode_result.stdout.strip() == "1":
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
+            check=False,
+        )
+
     quoted_path = shlex.quote(file_path)
     cmd_text = f"/plannotator-annotate {quoted_path}"
     subprocess.run(
@@ -583,6 +604,10 @@ def send_annotate_command(pane_id: str, file_path: str) -> None:
     )
     subprocess.run(
         ["tmux", "send-keys", "-t", pane_id, "Enter"],
+        check=False,
+    )
+    subprocess.run(
+        ["tmux", "display-message", "Plannotator annotation requested"],
         check=False,
     )
 
@@ -664,6 +689,7 @@ def _open_target(
 
     state.resolved_path = str(resolved)
     debug_dump(state)
+    copy_to_clipboard(str(resolved))
 
     if mode == "default":
         open_with_default_app(resolved)
@@ -833,6 +859,7 @@ def cmd_fallback(args: argparse.Namespace) -> None:
     state.selection = selected
     state.resolved_path = str(resolved)
     debug_dump(state)
+    copy_to_clipboard(str(resolved))
 
     if mode == "default":
         open_with_default_app(resolved)

@@ -686,6 +686,127 @@ class TestFzfCommands(unittest.TestCase):
         self.assertIn("annotate", cmd[header_idx + 1].lower())
 
 
+class TestSendAnnotateCommand(unittest.TestCase):
+
+    def test_copy_mode_cancelled_before_slash(self):
+        """When pane is in copy mode, cancel is sent before the slash command."""
+        calls = []
+        responses = {
+            ("display-message", "#{pane_in_mode}"): SimpleNamespace(returncode=0, stdout="1"),
+        }
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "tmux" and cmd[1] == "display-message":
+                fmt = cmd[-1]
+                if "pane_in_mode" in fmt:
+                    return responses[("display-message", "#{pane_in_mode}")]
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            tfp.send_annotate_command("%1", "/tmp/repo/src/main.py")
+
+        # First call should be display-message for pane_in_mode
+        self.assertIn("pane_in_mode", calls[0][-1])
+
+        # Second call should be cancel
+        self.assertEqual(calls[1][0], "tmux")
+        self.assertEqual(calls[1][1], "send-keys")
+        self.assertIn("-X", calls[1])
+        self.assertIn("cancel", calls[1])
+
+        # Third call should be send-keys -l with slash command
+        self.assertEqual(calls[2][0], "tmux")
+        self.assertEqual(calls[2][1], "send-keys")
+        self.assertIn("-l", calls[2])
+        cmd_text = " ".join(calls[2])
+        self.assertIn("/plannotator-annotate", cmd_text)
+
+        # Fourth call should be Enter
+        self.assertEqual(calls[3][0], "tmux")
+        self.assertEqual(calls[3][1], "send-keys")
+        self.assertIn("Enter", calls[3])
+
+        # Fifth call should be display-message
+        self.assertEqual(calls[4][0], "tmux")
+        self.assertEqual(calls[4][1], "display-message")
+        self.assertIn("Plannotator annotation requested", calls[4][-1])
+
+    def test_not_in_copy_mode_no_cancel(self):
+        """When pane is not in copy mode, no cancel is sent."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "tmux" and cmd[1] == "display-message":
+                fmt = cmd[-1]
+                if "pane_in_mode" in fmt:
+                    return SimpleNamespace(returncode=0, stdout="0")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            tfp.send_annotate_command("%1", "/tmp/repo/src/main.py")
+
+        # No cancel call should exist
+        cancel_calls = [
+            c for c in calls
+            if len(c) >= 4 and c[0] == "tmux" and c[1] == "send-keys"
+            and "-X" in c and "cancel" in c
+        ]
+        self.assertEqual(len(cancel_calls), 0, "no cancel should be sent when not in copy mode")
+
+        # Should still send the slash command and Enter
+        send_keys_calls = [
+            c for c in calls
+            if len(c) >= 3 and c[0] == "tmux" and c[1] == "send-keys"
+        ]
+        self.assertEqual(len(send_keys_calls), 2, "should send slash command + Enter")
+
+        literal_call = send_keys_calls[0]
+        self.assertIn("-l", literal_call)
+        cmd_text = " ".join(literal_call)
+        self.assertIn("/plannotator-annotate", cmd_text)
+        self.assertIn("src/main.py", cmd_text)
+
+        self.assertIn("Enter", send_keys_calls[1])
+
+        # Should include display-message
+        display_calls = [
+            c for c in calls
+            if len(c) >= 3 and c[0] == "tmux" and c[1] == "display-message"
+            and "Plannotator" in c[-1]
+        ]
+        self.assertEqual(len(display_calls), 1, "should show Plannotator message")
+
+    def test_path_with_spaces_is_quoted(self):
+        """Paths containing spaces are shell-quoted with shlex.quote."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "tmux" and cmd[1] == "display-message":
+                return SimpleNamespace(returncode=0, stdout="0")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            tfp.send_annotate_command("%1", "/tmp/repo/path with spaces/file.py")
+
+        # Find the send-keys -l call
+        literal_call = None
+        for c in calls:
+            if len(c) >= 4 and c[0] == "tmux" and c[1] == "send-keys" and "-l" in c:
+                literal_call = c
+                break
+
+        self.assertIsNotNone(literal_call, "expected send-keys -l call")
+        # The -l argument is the text. shlex.quote wraps the entire path in single quotes.
+        quoted_idx = literal_call.index("-l") + 1
+        text = literal_call[quoted_idx]
+        self.assertIn("/plannotator-annotate", text)
+        # The full absolute path should be single-quoted
+        self.assertIn("'/tmp/repo/path with spaces/file.py'", text)
+
+
 class TestChooseDefaultOpener(unittest.TestCase):
     def test_env_override(self):
         os.environ["TMUX_FILE_PICKER_OPENER"] = "custom-opener --flag"
