@@ -8,32 +8,37 @@ A tmux file picker for opening files mentioned in the currently visible pane out
 - Builds an authoritative file/dir index from the pane's git root with `fd`.
 - Shows only real files/dirs that appear in the visible pane output by path, basename, or visible absolute path.
 - Opens results from the original source pane, not the popup pane.
-- If no visible files or folders are found, a tmux message is shown and no fzf popup opens.
+- If no visible files or folders are found, the picker falls back to a full repo file listing.
 
 ## Keys
 
 From the main tmux pane:
 
 - `Ctrl-Shift-a` (`C-S-a`) opens the visible-screen picker directly.
-- `Ctrl-e` also opens the picker (legacy binding).
+- `Ctrl-e` opens the visible-screen link picker for URLs.
 
-Inside the picker:
+Inside the file picker:
 
 - `Enter` opens in a new `nvim` split.
 - `Ctrl-o` opens with the default app.
 - `Ctrl-y` annotates the selected file via Plannotator (sends `/plannotator-annotate <file>` to the source pane). If the source pane is in copy mode, it cancels copy mode first so the slash command reaches the prompt. Folders are blocked with a tmux message.
+
+Inside the link picker:
+
+- `Enter` opens the selected URL with the default app (browser).
+- `Ctrl-y` copies the selected URL to the clipboard.
 
 In tmux copy mode:
 
 - `o` opens the selected text in a new `nvim` split.
 - `O` opens the selected text with the default app.
 - `P` opens the visible-screen file picker without canceling copy mode.
-- `Ctrl-e` opens the visible-screen picker without canceling copy mode.
-- `Ctrl-Shift-a` opens the visible-screen picker without canceling copy mode (preserves scrolled viewport).
+- `Ctrl-Shift-a` opens the visible-screen file picker without canceling copy mode (preserves scrolled viewport).
+- `Ctrl-e` opens the visible-screen link picker without canceling copy mode.
 
 ## Script
 
-- `tmux-file-picker` — single Python script with `pick`, `open`, `fallback`, and `scan` subcommands.
+- `tmux-file-picker` — single Python script with `pick`, `links`, `open`, `fallback`, and `scan` subcommands.
 
 ## Dry-run / Debug
 
@@ -75,14 +80,15 @@ bind-key -n C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/
 # Copy-mode: open picker without canceling copy mode (preserves scrolled viewport)
 bind-key -T copy-mode-vi C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 
-# Legacy binding (also works)
-bind-key -n C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
-bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+# Link picker
+bind-key -n C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 
 # Copy-mode bindings
 bind-key -T copy-mode-vi 'o' send -F -X copy-pipe-and-cancel "/path/to/user/scripts/tmux-file-picker/tmux-file-picker open --mode nvim --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
 bind-key -T copy-mode-vi 'O' send -F -X copy-pipe-and-cancel "/path/to/user/scripts/tmux-file-picker/tmux-file-picker open --mode default --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
 bind-key -T copy-mode-vi P run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 ```
 
 ## Tests
@@ -93,7 +99,7 @@ python3 -m unittest discover -s tests
 
 ## Notes
 
-- The picker is strict visible-screen only: it never falls back to showing all repo files.
+- The file picker falls back to a full repo listing when no visible candidates are found; the link picker does not fall back.
 - `Shift+Enter` is intentionally not used because terminals/tmux/fzf often collapse it to plain `Enter`.
 - `Ctrl-o` is reliable and mnemonic: open with default app.
 - `Ctrl-y` sends `/plannotator-annotate <file>` into the source pane literally. Copy mode is automatically cancelled before sending so the slash command reaches Pi's prompt. Use it only when the source pane is a Pi agent session.

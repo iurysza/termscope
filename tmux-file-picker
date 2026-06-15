@@ -203,10 +203,62 @@ def clean_visible_line(line: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Link extraction
+# --------------------------------------------------------------------------- #
+
+URL_RE = re.compile(r"https?://[^\s<>\[\]{}|\\^`\"]+", re.IGNORECASE)
+MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+ANGLE_LINK_RE = re.compile(r"<(https?://[^>]+)>", re.IGNORECASE)
+
+
+def _clean_url_trailing_punctuation(url: str) -> str:
+    while url and url[-1] in ",;:!?.":
+        url = url[:-1]
+    while url.endswith(")") and "(" not in url:
+        url = url[:-1]
+    while url.endswith(">") and "<" not in url:
+        url = url[:-1]
+    return url.strip().strip("'\"")
+
+
+def extract_visible_links(screen_text: str) -> list[str]:
+    raw_lines = screen_text.splitlines()
+    matches: dict[str, int] = {}
+
+    def add(url: str, pos: int) -> None:
+        url = _clean_url_trailing_punctuation(url)
+        if not url:
+            return
+        if url not in matches:
+            matches[url] = pos
+
+    for i, line in enumerate(raw_lines):
+        for m in MARKDOWN_LINK_RE.finditer(line):
+            add(m.group(1), i)
+        for m in ANGLE_LINK_RE.finditer(line):
+            add(m.group(1), i)
+        for m in URL_RE.finditer(line):
+            add(m.group(0), i)
+
+    return [
+        url for url, _ in sorted(matches.items(), key=lambda item: (item[1], item[0].lower()))
+    ]
+
+
+# --------------------------------------------------------------------------- #
 # File indexing
 # --------------------------------------------------------------------------- #
 
 def list_repo_files(search_root: Path) -> list[str]:
+    # Skip home directory — too large to index.
+    home = Path.home()
+    try:
+        search_root.resolve().relative_to(home.resolve())
+        if search_root.resolve() == home.resolve():
+            return []
+    except ValueError:
+        pass  # Not under home, ok to scan
+
     try:
         result = subprocess.run(
             [
@@ -224,13 +276,18 @@ def list_repo_files(search_root: Path) -> list[str]:
             cwd=search_root,
             text=True,
             capture_output=True,
+            timeout=5,  # Don't hang on huge directories
             check=False,
         )
     except FileNotFoundError:
         return []
+    except subprocess.TimeoutExpired:
+        return []
     if result.returncode != 0:
         return []
-    return [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
+    lines = [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
+    # Cap at 5000 files — fzf can't handle more anyway
+    return lines[:5000]
 
 
 # --------------------------------------------------------------------------- #
@@ -459,12 +516,14 @@ def parse_fzf_result(stdout: str) -> FzfResult:
     return FzfResult(query=query, selection=first_rest)
 
 
-def run_fzf_visible(
+def _run_fzf(
     candidates: list[str],
-    search_root: Path,
-    header_label: str = "visible files in",
+    header: str,
+    expect: str,
 ) -> FzfResult | None:
     input_lines = [c for c in candidates if c.strip()]
+    if not input_lines:
+        return None
     input_text = "\n".join(input_lines)
     if input_text:
         input_text += "\n"
@@ -475,10 +534,66 @@ def run_fzf_visible(
                 "--reverse",
                 "--print-query",
                 "--header",
-                f"{header_label}: {search_root} | enter=nvim  ctrl-o=default app  ctrl-y=annotate",
+                header,
+                "--expect",
+                expect,
+            ],
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        print("tmux-file-picker: fzf not found", file=sys.stderr)
+        return None
+
+    if proc.returncode >= 2:
+        return None
+    return parse_fzf_result(proc.stdout)
+
+
+def run_fzf_visible(
+    candidates: list[str],
+    search_root: Path,
+    header_label: str = "visible files in",
+) -> FzfResult | None:
+    return _run_fzf(
+        candidates,
+        f"{header_label}: {search_root} | enter=nvim  ctrl-o=default app  ctrl-y=annotate",
+        "enter,ctrl-o,ctrl-y",
+    )
+
+
+def run_fzf_links(candidates: list[str]) -> FzfResult | None:
+    return _run_fzf(
+        candidates,
+        "visible links | enter=open  ctrl-y=copy",
+        "enter,ctrl-y",
+    )
+
+
+def run_fzf_full_repo(search_root: Path, query: str) -> FzfResult | None:
+    """Show all repo files in a full fzf picker. Used as fallback when
+    no visible candidates are found on screen."""
+    files = list_repo_files(search_root)
+    if not files:
+        return None
+    input_text = "\n".join(f for f in files if f.strip())
+    if not input_text.strip():
+        return None
+    if input_text:
+        input_text += "\n"
+    try:
+        proc = subprocess.run(
+            [
+                "fzf",
+                "--reverse",
+                "--print-query",
+                "--header",
+                f"all files in: {search_root} | enter=nvim  ctrl-o=default app",
                 "--expect",
                 "enter,ctrl-o,ctrl-y",
             ],
+            cwd=search_root,
             input=input_text,
             text=True,
             stdout=subprocess.PIPE,
@@ -556,10 +671,10 @@ def _check_opener(opener: list[str]) -> None:
         sys.exit(f"tmux-file-picker: opener not found: {opener[0]}")
 
 
-def open_with_default_app(path: Path) -> NoReturn:
+def open_with_default_app(target: str | Path) -> NoReturn:
     opener = choose_default_opener()
     _check_opener(opener)
-    os.execvp(opener[0], opener + [str(path)])
+    os.execvp(opener[0], opener + [str(target)])
 
 
 def open_in_nvim_split(path: Path, line: str, pane_path: Path, pane_id: str) -> NoReturn:
@@ -759,18 +874,17 @@ def cmd_pick(args: argparse.Namespace) -> None:
         candidates=candidates,
     )
 
-    if not candidates:
-        subprocess.run(
-            ["tmux", "display-message", "No visible files/folders found"],
-            check=False,
-        )
+    # Filter out whitespace-only candidates that would produce an empty fzf.
+    real_candidates = [c for c in candidates if c.strip()]
+    visible_empty = len(real_candidates) == 0
+
+    if visible_empty:
         log_event(
-            "pick_empty",
+            "pick_empty_fallback",
             pane_id=pane_id,
-            candidate_count=0,
+            candidate_count=len(candidates),
+            real_count=0,
         )
-        debug_dump(state)
-        return
 
     log_event(
         "pick_start",
@@ -779,12 +893,27 @@ def cmd_pick(args: argparse.Namespace) -> None:
         source_pane_path=str(source_pane_path),
         search_root=str(search_root),
         indexed_count=len(repo_paths),
-        candidate_count=len(candidates),
+        candidate_count=len(real_candidates) if not visible_empty else 0,
+        fallback=visible_empty,
     )
 
-    fzf_result = run_fzf_visible(candidates, search_root)
+    if visible_empty:
+        # No visible files — fall back to full repo listing so the picker
+        # is never empty.
+        fzf_result = run_fzf_full_repo(search_root, "")
+        if fzf_result is None:
+            subprocess.run(
+                ["tmux", "display-message", "No files found in repo"],
+                check=False,
+            )
+            log_event("pick_empty_repo", pane_id=pane_id)
+            debug_dump(state)
+            return
+    else:
+        fzf_result = run_fzf_visible(real_candidates, search_root)
+
     if fzf_result is None:
-        log_event("pick_cancel_or_empty", pane_id=pane_id, candidate_count=len(candidates))
+        log_event("pick_cancel_or_empty", pane_id=pane_id, candidate_count=len(real_candidates))
         debug_dump(state)
         return
 
@@ -867,6 +996,73 @@ def cmd_fallback(args: argparse.Namespace) -> None:
         open_in_nvim_split(resolved, line, source_pane_path, pane_id)
 
 
+def cmd_links(args: argparse.Namespace) -> None:
+    pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
+    pane_id = args.pane_id or ""
+
+    screen_text = capture_pane_text(pane_id)
+    screen_text = strip_ansi(screen_text)
+    candidates = extract_visible_links(screen_text)
+
+    state = DebugState(
+        pane_path=str(pane_path),
+        pane_id=pane_id,
+        source_pane_path=str(pane_path),
+        search_root="",
+        candidate_count=len(candidates),
+        screen_line_count=len(screen_text.splitlines()),
+        visible_only=True,
+        screen_text=screen_text,
+        candidates=candidates,
+    )
+
+    real_candidates = [c for c in candidates if c.strip()]
+    if not real_candidates:
+        subprocess.run(
+            ["tmux", "display-message", "No visible links found"],
+            check=False,
+        )
+        log_event("links_empty", pane_id=pane_id)
+        debug_dump(state)
+        return
+
+    log_event(
+        "links_start",
+        pane_path=str(pane_path),
+        pane_id=pane_id,
+        candidate_count=len(real_candidates),
+    )
+
+    fzf_result = run_fzf_links(real_candidates)
+    if fzf_result is None:
+        log_event("links_cancel_or_empty", pane_id=pane_id, candidate_count=len(real_candidates))
+        debug_dump(state)
+        return
+
+    state.query = fzf_result.query
+    state.key = fzf_result.key
+    state.selection = fzf_result.selection
+
+    selection = fzf_result.selection
+    if not selection:
+        debug_dump(state)
+        return
+
+    state.resolved_path = selection
+    state.mode = "url"
+    copy_to_clipboard(selection)
+    debug_dump(state)
+
+    if fzf_result.key == "ctrl-y":
+        subprocess.run(
+            ["tmux", "display-message", "Link copied to clipboard"],
+            check=False,
+        )
+        return
+
+    open_with_default_app(selection)
+
+
 def cmd_scan(args: argparse.Namespace) -> None:
     pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
     pane_id = args.pane_id or ""
@@ -921,6 +1117,10 @@ def main() -> None:
     scan_parser.add_argument("--pane-path", required=True)
     scan_parser.add_argument("--pane-id", required=True)
 
+    links_parser = subparsers.add_parser("links")
+    links_parser.add_argument("--pane-path", required=True)
+    links_parser.add_argument("--pane-id", required=True)
+
     args = parser.parse_args()
     log_event("start", command=args.command, argv=sys.argv[1:])
 
@@ -932,6 +1132,8 @@ def main() -> None:
         cmd_fallback(args)
     elif args.command == "scan":
         cmd_scan(args)
+    elif args.command == "links":
+        cmd_links(args)
 
 
 if __name__ == "__main__":

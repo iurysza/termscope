@@ -55,6 +55,49 @@ class TestCleanVisibleLine(unittest.TestCase):
         self.assertEqual(tfp.clean_visible_line("src/main.py;"), "src/main.py")
 
 
+class TestExtractVisibleLinks(unittest.TestCase):
+    def test_raw_url(self):
+        text = "check https://example.com/foo for details"
+        self.assertEqual(tfp.extract_visible_links(text), ["https://example.com/foo"])
+
+    def test_markdown_link(self):
+        text = "[example](https://example.com) and [other](https://other.com/path)"
+        self.assertEqual(
+            tfp.extract_visible_links(text),
+            ["https://example.com", "https://other.com/path"],
+        )
+
+    def test_angle_brackets(self):
+        text = "see <https://example.com> here"
+        self.assertEqual(tfp.extract_visible_links(text), ["https://example.com"])
+
+    def test_multiple_schemes(self):
+        text = "http://old.test https://new.test/path?q=1"
+        self.assertEqual(
+            tfp.extract_visible_links(text),
+            ["http://old.test", "https://new.test/path?q=1"],
+        )
+
+    def test_deduplicates_preserves_order(self):
+        text = "https://a.com\nhttps://b.com\nhttps://a.com"
+        self.assertEqual(
+            tfp.extract_visible_links(text),
+            ["https://a.com", "https://b.com"],
+        )
+
+    def test_strips_trailing_punctuation(self):
+        text = "visit https://example.com."
+        self.assertEqual(tfp.extract_visible_links(text), ["https://example.com"])
+
+    def test_strips_markdown_trailing_paren(self):
+        text = "[link](https://example.com))"
+        self.assertEqual(tfp.extract_visible_links(text), ["https://example.com"])
+
+    def test_no_false_positives(self):
+        text = "path/to/file.txt and ~/other"
+        self.assertEqual(tfp.extract_visible_links(text), [])
+
+
 class TestParseSelectedTarget(unittest.TestCase):
     def test_plain_path(self):
         p = tfp.parse_selected_target("src/main.py")
@@ -410,7 +453,7 @@ class TestScanCommand(unittest.TestCase):
 
 
 class TestNoCandidates(unittest.TestCase):
-    def test_empty_candidates_shows_message_no_fzf(self):
+    def test_empty_candidates_falls_back_to_full_repo(self):
         args = SimpleNamespace(
             pane_path="/tmp/repo",
             pane_id="%1",
@@ -421,6 +464,7 @@ class TestNoCandidates(unittest.TestCase):
              patch.object(tfp, "list_repo_files", return_value=[]), \
              patch.object(tfp, "extract_visible_candidates", return_value=[]), \
              patch.object(tfp, "run_fzf_visible") as mock_fzf, \
+             patch.object(tfp, "run_fzf_full_repo", return_value=None) as mock_full, \
              patch.object(tfp.subprocess, "run") as mock_run, \
              patch("os.execvp"):
 
@@ -431,8 +475,10 @@ class TestNoCandidates(unittest.TestCase):
 
         # run_fzf_visible should NOT be called when candidates are empty
         mock_fzf.assert_not_called()
+        # Should fall back to full-repo listing
+        mock_full.assert_called_once()
 
-        # tmux display-message should be called with the no-candidates message
+        # tmux display-message should be called with the empty-repo message
         display_calls = [
             call for call in mock_run.call_args_list
             if len(call.args[0]) >= 2
@@ -440,8 +486,8 @@ class TestNoCandidates(unittest.TestCase):
             and call.args[0][1] == "display-message"
         ]
         self.assertTrue(
-            any("No visible files/folders found" in str(call) for call in display_calls),
-            f"expected 'No visible files/folders found' in display-message calls, got: {display_calls}"
+            any("No files found in repo" in str(call) for call in display_calls),
+            f"expected 'No files found in repo' in display-message calls, got: {display_calls}"
         )
 
 
