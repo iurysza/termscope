@@ -499,6 +499,7 @@ def resolve_existing_path(path_text: str, pane_path: Path, search_root: Path) ->
 def parse_fzf_result(stdout: str) -> FzfResult:
     if not stdout:
         return FzfResult()
+    stdout = stdout.rstrip("\n")
     lines = stdout.split("\n")
     query = lines[0] if lines else ""
     if len(lines) == 1:
