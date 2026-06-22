@@ -758,6 +758,40 @@ class TestSortEnvVar(unittest.TestCase):
         self.assertEqual(cands, ["README.md", "src/main.py", "src/utils.py"])
 
 
+class TestReorderCommand(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(__file__).parent / "_test_reorder"
+        self.tmp.mkdir(exist_ok=True)
+        self.cand = self.tmp / "candidates.txt"
+        self.state = self.tmp / "state.txt"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_toggles_appearance_to_alpha(self):
+        self.cand.write_text("z\na\nm\n")
+        self.state.write_text("appearance")
+        args = SimpleNamespace(candidates_file=str(self.cand), state_file=str(self.state))
+        import io
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            tfp.cmd_reorder(args)
+        self.assertEqual(self.state.read_text(), "alpha")
+        self.assertEqual(buf.getvalue(), "a\nm\nz\n")
+
+    def test_toggles_alpha_to_appearance(self):
+        self.cand.write_text("z\na\nm\n")
+        self.state.write_text("alpha")
+        args = SimpleNamespace(candidates_file=str(self.cand), state_file=str(self.state))
+        import io
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            tfp.cmd_reorder(args)
+        self.assertEqual(self.state.read_text(), "appearance")
+        self.assertEqual(buf.getvalue(), "z\na\nm\n")
+
+
 class TestFzfCommands(unittest.TestCase):
     def test_visible_picker_not_called_when_empty_candidates(self):
         # After refactoring, empty candidates means no fzf call
@@ -785,6 +819,17 @@ class TestFzfCommands(unittest.TestCase):
 
         self.assertEqual(run.call_args.kwargs["input"], "app.py\nREADME.md\nsrc/main.py\n")
 
+    def test_fallback_picker_includes_sort_toggle_bind(self):
+        completed = SimpleNamespace(returncode=0, stdout="src/main.py\n")
+        with patch.object(tfp, "list_repo_files", return_value=["src/main.py"]), \
+             patch.object(tfp.subprocess, "run", return_value=completed) as run:
+            tfp.run_fallback_picker(Path("/tmp/repo"), "")
+
+        cmd = run.call_args.args[0]
+        bind_idx = cmd.index("--bind")
+        self.assertIn("ctrl-s:reload", cmd[bind_idx + 1])
+        self.assertIn("reorder", cmd[bind_idx + 1])
+
     def test_fzf_visible_includes_ctrl_y(self):
         completed = SimpleNamespace(returncode=1, stdout="query\nctrl-y\nselection")
         with patch.object(tfp.subprocess, "run", return_value=completed) as run:
@@ -798,6 +843,23 @@ class TestFzfCommands(unittest.TestCase):
         self.assertIn("ctrl-y", cmd[expect_idx + 1])
         header_idx = cmd.index("--header")
         self.assertIn("annotate", cmd[header_idx + 1].lower())
+
+    def test_fzf_visible_alpha_sorts_input(self):
+        completed = SimpleNamespace(returncode=1, stdout="query\nenter\nselection")
+        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
+            tfp.run_fzf_visible(["z.py", "a.py", "m.py"], Path("/tmp/repo"), sort="alpha")
+
+        self.assertEqual(run.call_args.kwargs["input"], "a.py\nm.py\nz.py\n")
+
+    def test_fzf_visible_includes_sort_toggle_bind(self):
+        completed = SimpleNamespace(returncode=1, stdout="query\nenter\nselection")
+        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
+            tfp.run_fzf_visible(["src/main.py"], Path("/tmp/repo"))
+
+        cmd = run.call_args.args[0]
+        bind_idx = cmd.index("--bind")
+        self.assertIn("ctrl-s:reload", cmd[bind_idx + 1])
+        self.assertIn("reorder", cmd[bind_idx + 1])
 
 
 class TestSendAnnotateCommand(unittest.TestCase):

@@ -55,6 +55,7 @@ Inside the file picker:
 | `Enter` | Open in a new Neovim split |
 | `Ctrl-o` | Open with the default app |
 | `Ctrl-y` | Annotate the file in the source pane (Plannotator integration) |
+| `Ctrl-s` | Toggle appearance / alphabetical sort |
 
 Inside the link picker:
 
@@ -62,6 +63,7 @@ Inside the link picker:
 | --- | --- |
 | `Enter` | Open URL in browser |
 | `Ctrl-y` | Copy URL to clipboard |
+| `Ctrl-s` | Toggle appearance / alphabetical sort |
 
 In tmux copy-mode the same bindings work without canceling copy mode, so the
 scrolled viewport is preserved.
@@ -122,8 +124,9 @@ See what `termscope` would find without opening `fzf`:
 
 ## Sorting
 
-By default the list matches the order in which paths appear on screen. To sort
-alphabetically instead, pass `--sort alpha`:
+By default the list matches the order in which paths appear on screen. Switch
+to alphabetical order with `Ctrl-s` while the picker is open, or pass
+`--sort alpha` at launch time:
 
 ```sh
 ./termscope pick --pane-path "$PWD" --pane-id "$TMUX_PANE" --sort alpha
@@ -139,34 +142,8 @@ src/utils.py
 tests
 ```
 
-### tmux
-
-Add a second binding for alphabetical order, or change the existing one:
-
-```tmux
-bind-key -n C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id} --sort appearance'"
-bind-key -n C-S-z run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id} --sort alpha'"
-```
-
-### Herdr
-
-Set `TERMSCOPE_SORT` before the plugin action runs. In `~/.config/herdr/config.toml`:
-
-```toml
-[[keys.command]]
-key = "ctrl+shift+a"
-type = "plugin_action"
-command = "termscope.open"
-env = { TERMSCOPE_SORT = "appearance" }
-description = "visible-screen file picker"
-
-[[keys.command]]
-key = "ctrl+shift+z"
-type = "plugin_action"
-command = "termscope.open"
-env = { TERMSCOPE_SORT = "alpha" }
-description = "alphabetical file picker"
-```
+You can also set a default with the `TERMSCOPE_SORT` environment variable
+(`appearance` or `alpha`). Press `Ctrl-s` at any time to override it.
 
 ## Configuration
 
