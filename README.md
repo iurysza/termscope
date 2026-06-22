@@ -120,11 +120,60 @@ See what `termscope` would find without opening `fzf`:
 ./termscope scan --pane-path "$PWD" --pane-id "$TMUX_PANE"
 ```
 
+## Sorting
+
+By default the list matches the order in which paths appear on screen. To sort
+alphabetically instead, pass `--sort alpha`:
+
+```sh
+./termscope pick --pane-path "$PWD" --pane-id "$TMUX_PANE" --sort alpha
+```
+
+Alphabetical sorting naturally keeps subfolders next to their parent folder:
+
+```
+README.md
+src
+src/main.py
+src/utils.py
+tests
+```
+
+### tmux
+
+Add a second binding for alphabetical order, or change the existing one:
+
+```tmux
+bind-key -n C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id} --sort appearance'"
+bind-key -n C-S-z run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id} --sort alpha'"
+```
+
+### Herdr
+
+Set `TERMSCOPE_SORT` before the plugin action runs. In `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "ctrl+shift+a"
+type = "plugin_action"
+command = "termscope.open"
+env = { TERMSCOPE_SORT = "appearance" }
+description = "visible-screen file picker"
+
+[[keys.command]]
+key = "ctrl+shift+z"
+type = "plugin_action"
+command = "termscope.open"
+env = { TERMSCOPE_SORT = "alpha" }
+description = "alphabetical file picker"
+```
+
 ## Configuration
 
 | Environment variable | Purpose |
 | --- | --- |
 | `TERMSCOPE_OPENER` | Override the default opener, e.g. `open -a Firefox` |
+| `TERMSCOPE_SORT` | Default sort mode: `appearance` or `alpha` |
 | `TERMSCOPE_LOG` | Path to the JSON log file |
 | `TERMSCOPE_DEBUG_DIR` | Directory for per-run debug dumps |
 

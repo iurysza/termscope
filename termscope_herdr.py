@@ -89,21 +89,23 @@ def run_picker(subcommand: str) -> None:
         print("termscope: missing SOURCE_PANE_ID or SOURCE_PANE_CWD", file=sys.stderr)
         sys.exit(1)
 
+    sort = os.environ.get("TERMSCOPE_SORT", "appearance")
+
     script = os.path.join(plugin_root(), "termscope")
-    subprocess.run(
-        [
-            sys.executable,
-            script,
-            subcommand,
-            "--pane-path",
-            cwd,
-            "--pane-id",
-            pane_id,
-            "--multiplexer",
-            "herdr",
-        ],
-        check=False,
-    )
+    cmd = [
+        sys.executable,
+        script,
+        subcommand,
+        "--pane-path",
+        cwd,
+        "--pane-id",
+        pane_id,
+        "--multiplexer",
+        "herdr",
+        "--sort",
+        sort,
+    ]
+    subprocess.run(cmd, check=False)
 
 
 def main() -> None:

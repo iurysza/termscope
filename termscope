@@ -422,7 +422,16 @@ def _clean_url_trailing_punctuation(url: str) -> str:
     return url.strip().strip("'\"")
 
 
-def extract_visible_links(screen_text: str) -> list[str]:
+def sort_items(items: dict[str, int], sort: str = "appearance") -> list[str]:
+    """Return dictionary keys sorted by appearance order or alphabetically."""
+    if sort == "alpha":
+        return sorted(items.keys(), key=lambda s: s.lower())
+    return [
+        item for item, _ in sorted(items.items(), key=lambda item: (item[1], item[0].lower()))
+    ]
+
+
+def extract_visible_links(screen_text: str, sort: str = "appearance") -> list[str]:
     raw_lines = screen_text.splitlines()
     matches: dict[str, int] = {}
 
@@ -441,9 +450,7 @@ def extract_visible_links(screen_text: str) -> list[str]:
         for m in URL_RE.finditer(line):
             add(m.group(0), i)
 
-    return [
-        url for url, _ in sorted(matches.items(), key=lambda item: (item[1], item[0].lower()))
-    ]
+    return sort_items(matches, sort)
 
 
 # --------------------------------------------------------------------------- #
@@ -500,6 +507,7 @@ def extract_visible_candidates(
     repo_paths: list[str],
     search_root: Path,
     pane_path: Path,
+    sort: str = "appearance",
 ) -> list[str]:
     home = Path.home()
     raw_lines = screen_text.splitlines()
@@ -625,9 +633,7 @@ def extract_visible_candidates(
                 continue
             break
 
-    return [
-        display for display, _ in sorted(matches.items(), key=lambda item: (item[1], item[0].lower()))
-    ]
+    return sort_items(matches, sort)
 
 
 # --------------------------------------------------------------------------- #
@@ -773,10 +779,17 @@ def run_fzf_links(candidates: list[str]) -> FzfResult | None:
     )
 
 
-def run_fzf_full_repo(search_root: Path, query: str) -> FzfResult | None:
+def sort_file_list(files: list[str], sort: str = "appearance") -> list[str]:
+    """Sort a plain file list alphabetically or leave it as-is."""
+    if sort == "alpha":
+        return sorted(files, key=lambda s: s.lower())
+    return files
+
+
+def run_fzf_full_repo(search_root: Path, query: str, sort: str = "appearance") -> FzfResult | None:
     """Show all repo files in a full fzf picker. Used as fallback when
     no visible candidates are found on screen."""
-    files = list_repo_files(search_root)
+    files = sort_file_list(list_repo_files(search_root), sort)
     if not files:
         return None
     input_text = "\n".join(f for f in files if f.strip())
@@ -809,8 +822,8 @@ def run_fzf_full_repo(search_root: Path, query: str) -> FzfResult | None:
     return parse_fzf_result(proc.stdout)
 
 
-def run_fallback_picker(search_root: Path, query: str) -> str | None:
-    files = list_repo_files(search_root)
+def run_fallback_picker(search_root: Path, query: str, sort: str = "appearance") -> str | None:
+    files = sort_file_list(list_repo_files(search_root), sort)
     input_text = "\n".join(f for f in files if f.strip())
     if input_text:
         input_text += "\n"
@@ -1052,8 +1065,9 @@ def cmd_pick(args: argparse.Namespace) -> None:
     screen_text = capture_pane_text(pane_id, backend)
     screen_text = strip_ansi(screen_text)
     repo_paths = list_repo_files(search_root)
+    sort = getattr(args, "sort", None) or os.environ.get("TERMSCOPE_SORT", "appearance")
     candidates = extract_visible_candidates(
-        screen_text, repo_paths, search_root, source_pane_path
+        screen_text, repo_paths, search_root, source_pane_path, sort
     )
 
     state = DebugState(
@@ -1097,7 +1111,7 @@ def cmd_pick(args: argparse.Namespace) -> None:
     if visible_empty:
         # No visible files — fall back to full repo listing so the picker
         # is never empty.
-        fzf_result = run_fzf_full_repo(search_root, "")
+        fzf_result = run_fzf_full_repo(search_root, "", sort)
         if fzf_result is None:
             show_message("No files found in repo", backend)
             log_event("pick_empty_repo", pane_id=pane_id)
@@ -1158,6 +1172,7 @@ def cmd_fallback(args: argparse.Namespace) -> None:
     mode = args.mode
     query = args.query
     line = args.line or ""
+    sort = getattr(args, "sort", None) or os.environ.get("TERMSCOPE_SORT", "appearance")
     backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
     source_pane_path = resolve_source_pane_path(pane_path, pane_id, backend)
     search_root = find_search_root(source_pane_path)
@@ -1172,7 +1187,7 @@ def cmd_fallback(args: argparse.Namespace) -> None:
         query=query,
     )
 
-    selected = run_fallback_picker(search_root, query)
+    selected = run_fallback_picker(search_root, query, sort)
     if not selected:
         debug_dump(state)
         return
@@ -1196,10 +1211,11 @@ def cmd_links(args: argparse.Namespace) -> None:
     pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
     pane_id = args.pane_id or ""
     backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
+    sort = getattr(args, "sort", None) or os.environ.get("TERMSCOPE_SORT", "appearance")
 
     screen_text = capture_pane_text(pane_id, backend)
     screen_text = strip_ansi(screen_text)
-    candidates = extract_visible_links(screen_text)
+    candidates = extract_visible_links(screen_text, sort)
 
     state = DebugState(
         pane_path=str(pane_path),
@@ -1261,12 +1277,13 @@ def cmd_scan(args: argparse.Namespace) -> None:
     backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
     source_pane_path = resolve_source_pane_path(pane_path, pane_id, backend)
     search_root = find_search_root(source_pane_path)
+    sort = getattr(args, "sort", None) or os.environ.get("TERMSCOPE_SORT", "appearance")
 
     screen_text = capture_pane_text(pane_id, backend)
     screen_text = strip_ansi(screen_text)
     repo_paths = list_repo_files(search_root)
     candidates = extract_visible_candidates(
-        screen_text, repo_paths, search_root, source_pane_path
+        screen_text, repo_paths, search_root, source_pane_path, sort
     )
 
     result = {
@@ -1295,6 +1312,7 @@ def main() -> None:
     pick_parser.add_argument("--pane-path", required=True)
     pick_parser.add_argument("--pane-id", required=True)
     pick_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
+    pick_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     open_parser = subparsers.add_parser("open")
     open_parser.add_argument("--mode", choices=["nvim", "default"], required=True)
@@ -1309,16 +1327,19 @@ def main() -> None:
     fallback_parser.add_argument("--query", required=True)
     fallback_parser.add_argument("--line", default="")
     fallback_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
+    fallback_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     scan_parser = subparsers.add_parser("scan")
     scan_parser.add_argument("--pane-path", required=True)
     scan_parser.add_argument("--pane-id", required=True)
     scan_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
+    scan_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     links_parser = subparsers.add_parser("links")
     links_parser.add_argument("--pane-path", required=True)
     links_parser.add_argument("--pane-id", required=True)
     links_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
+    links_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     args = parser.parse_args()
     log_event("start", command=args.command, argv=sys.argv[1:])

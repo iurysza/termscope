@@ -97,6 +97,20 @@ class TestExtractVisibleLinks(unittest.TestCase):
         text = "path/to/file.txt and ~/other"
         self.assertEqual(tfp.extract_visible_links(text), [])
 
+    def test_alpha_sort(self):
+        text = "https://zoo.com\nhttps://alpha.com\nhttps://middle.com"
+        self.assertEqual(
+            tfp.extract_visible_links(text, sort="alpha"),
+            ["https://alpha.com", "https://middle.com", "https://zoo.com"],
+        )
+
+    def test_appearance_sort_is_default(self):
+        text = "https://zoo.com\nhttps://alpha.com\nhttps://middle.com"
+        self.assertEqual(
+            tfp.extract_visible_links(text),
+            ["https://zoo.com", "https://alpha.com", "https://middle.com"],
+        )
+
 
 class TestParseSelectedTarget(unittest.TestCase):
     def test_plain_path(self):
@@ -266,6 +280,18 @@ class TestExtractVisibleCandidates(unittest.TestCase):
         cands = tfp.extract_visible_candidates(text, repo, self.tmp, self.tmp)
         # Neither path should match because no exact path/basename is visible
         self.assertEqual(len(cands), 0)
+
+    def test_alpha_sort_groups_paths(self):
+        text = "src/utils.py src/main.py README.md"
+        repo = ["README.md", "src", "src/main.py", "src/utils.py"]
+        cands = tfp.extract_visible_candidates(text, repo, self.tmp, self.tmp, sort="alpha")
+        self.assertEqual(cands, ["README.md", "src", "src/main.py", "src/utils.py"])
+
+    def test_appearance_sort_is_default(self):
+        text = "src/utils.py\nsrc/main.py\nREADME.md"
+        repo = ["README.md", "src/main.py", "src/utils.py"]
+        cands = tfp.extract_visible_candidates(text, repo, self.tmp, self.tmp)
+        self.assertEqual(cands, ["src/utils.py", "src/main.py", "README.md"])
 
 
 class TestParseFzfResult(unittest.TestCase):
@@ -698,6 +724,40 @@ class TestLineTargetPreservation(unittest.TestCase):
         mock_default.assert_called_once_with(fake_file)
 
 
+class TestSortFileList(unittest.TestCase):
+    def test_alpha_sorts_case_insensitive(self):
+        files = ["Zebra.md", "alpha.md", "Beta.md"]
+        self.assertEqual(tfp.sort_file_list(files, "alpha"), ["alpha.md", "Beta.md", "Zebra.md"])
+
+    def test_appearance_leaves_order(self):
+        files = ["Zebra.md", "alpha.md", "Beta.md"]
+        self.assertEqual(tfp.sort_file_list(files, "appearance"), files)
+
+
+class TestSortEnvVar(unittest.TestCase):
+    def setUp(self):
+        self._old_sort = os.environ.pop("TERMSCOPE_SORT", None)
+        self.tmp = Path(__file__).parent / "_test_sort_env"
+        self.tmp.mkdir(exist_ok=True)
+
+    def tearDown(self):
+        if self._old_sort is not None:
+            os.environ["TERMSCOPE_SORT"] = self._old_sort
+        elif "TERMSCOPE_SORT" in os.environ:
+            del os.environ["TERMSCOPE_SORT"]
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_env_var_defaults_to_alpha(self):
+        os.environ["TERMSCOPE_SORT"] = "alpha"
+        text = "src/utils.py\nsrc/main.py\nREADME.md"
+        repo = ["README.md", "src/main.py", "src/utils.py"]
+        # Simulate cmd_* picking up the env var when args.sort is None.
+        sort = None or os.environ.get("TERMSCOPE_SORT", "appearance")
+        cands = tfp.extract_visible_candidates(text, repo, self.tmp, self.tmp, sort)
+        self.assertEqual(cands, ["README.md", "src/main.py", "src/utils.py"])
+
+
 class TestFzfCommands(unittest.TestCase):
     def test_visible_picker_not_called_when_empty_candidates(self):
         # After refactoring, empty candidates means no fzf call
@@ -716,6 +776,14 @@ class TestFzfCommands(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["input"], "src/main.py\nREADME.md\n")
         self.assertEqual(run.call_args.kwargs["stdout"], tfp.subprocess.PIPE)
         self.assertNotIn("capture_output", run.call_args.kwargs)
+
+    def test_fallback_picker_alpha_sorts_input(self):
+        completed = SimpleNamespace(returncode=0, stdout="src/main.py\n")
+        with patch.object(tfp, "list_repo_files", return_value=["src/main.py", "README.md", "app.py"]), \
+             patch.object(tfp.subprocess, "run", return_value=completed) as run:
+            tfp.run_fallback_picker(Path("/tmp/repo"), "", sort="alpha")
+
+        self.assertEqual(run.call_args.kwargs["input"], "app.py\nREADME.md\nsrc/main.py\n")
 
     def test_fzf_visible_includes_ctrl_y(self):
         completed = SimpleNamespace(returncode=1, stdout="query\nctrl-y\nselection")
