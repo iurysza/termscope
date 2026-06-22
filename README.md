@@ -1,4 +1,4 @@
-# tmux-file-picker
+# termscope
 
 A tmux / Herdr file picker for opening files mentioned in the currently visible pane output.
 
@@ -38,20 +38,20 @@ In tmux copy mode:
 
 ## Script
 
-- `tmux-file-picker` — single Python script with `pick`, `links`, `open`, `fallback`, and `scan` subcommands.
-- `herdr-plugin.toml` + `herdr-file-picker.py` — Herdr plugin wrapper that opens the picker in an overlay pane.
+- `termscope` — single Python script with `pick`, `links`, `open`, `fallback`, and `scan` subcommands.
+- `herdr-plugin.toml` + `termscope.py` — Herdr plugin wrapper that opens the picker in an overlay pane.
 
 ## Dry-run / Debug
 
 Use the `scan` subcommand to see what the picker would find without opening fzf:
 
 ```sh
-/path/to/user/scripts/tmux-file-picker/tmux-file-picker scan --pane-path /path --pane-id %1
+/path/to/user/scripts/termscope/termscope scan --pane-path /path --pane-id %1
 ```
 
 This prints JSON with capture details, candidate count, and the candidate list.
 
-Set `TMUX_FILE_PICKER_DEBUG_DIR` to a directory path for per-run debug dumps:
+Set `TERMSCOPE_DEBUG_DIR` to a directory path for per-run debug dumps:
 
 - `screen.txt` — captured pane text
 - `files.txt` — indexed repo files
@@ -70,7 +70,7 @@ The debug directory path is printed to stderr.
 - `nvim`
 - A default opener: macOS `open`, WSL `wslview`, or Linux `xdg-open`
 
-Override the opener with the `TMUX_FILE_PICKER_OPENER` environment variable.
+Override the opener with the `TERMSCOPE_OPENER` environment variable.
 
 The script auto-detects the multiplexer from the pane id shape (`%1` for tmux, `w1:p1` for Herdr). Use `--multiplexer tmux|herdr` to force a backend.
 
@@ -78,20 +78,20 @@ The script auto-detects the multiplexer from the pane id shape (`%1` for tmux, `
 
 ```tmux
 # Normal mode: open visible-screen picker
-bind-key -n C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -n C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 
 # Copy-mode: open picker without canceling copy mode (preserves scrolled viewport)
-bind-key -T copy-mode-vi C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 
 # Link picker
-bind-key -n C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
-bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -n C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 
 # Copy-mode bindings
-bind-key -T copy-mode-vi 'o' send -F -X copy-pipe-and-cancel "/path/to/user/scripts/tmux-file-picker/tmux-file-picker open --mode nvim --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
-bind-key -T copy-mode-vi 'O' send -F -X copy-pipe-and-cancel "/path/to/user/scripts/tmux-file-picker/tmux-file-picker open --mode default --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
-bind-key -T copy-mode-vi P run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
-bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi 'o' send -F -X copy-pipe-and-cancel "/path/to/user/scripts/termscope/termscope open --mode nvim --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
+bind-key -T copy-mode-vi 'O' send -F -X copy-pipe-and-cancel "/path/to/user/scripts/termscope/termscope open --mode default --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
+bind-key -T copy-mode-vi P run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 ```
 
 ## Herdr config
@@ -99,7 +99,7 @@ bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/pa
 Install the plugin from the repo root:
 
 ```sh
-herdr plugin link /path/to/user/scripts/tmux-file-picker
+herdr plugin link /path/to/user/scripts/termscope
 ```
 
 Add keybindings to `~/.config/herdr/config.toml`:
@@ -108,13 +108,13 @@ Add keybindings to `~/.config/herdr/config.toml`:
 [[keys.command]]
 key = "ctrl+shift+a"
 type = "plugin_action"
-command = "herdr-file-picker.open"
+command = "termscope.open"
 description = "visible-screen file picker"
 
 [[keys.command]]
 key = "ctrl+e"
 type = "plugin_action"
-command = "herdr-file-picker.open-links"
+command = "termscope.open-links"
 description = "visible-screen link picker"
 ```
 
@@ -130,7 +130,7 @@ The plugin opens an overlay pane, runs fzf over the visible files/links in the s
 
 ```sh
 python3 -m unittest discover -s tests
-python3 -m py_compile tmux-file-picker herdr-file-picker.py
+python3 -m py_compile termscope termscope.py
 ```
 
 ## Notes

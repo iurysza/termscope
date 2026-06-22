@@ -16,7 +16,7 @@
 
 ### Changes made
 
-- `tmux-file-picker`:
+- `termscope`:
   - Added `scan` subcommand (dry-run JSON output).
   - `capture_pane_text` now calls `tmux capture-pane -pJ` without `-S` or limit.
   - Removed `--limit` argument from `pick` subparser.
@@ -26,7 +26,7 @@
   - `--expect` includes `ctrl-y`.
   - `parse_fzf_result` recognizes `ctrl-y`.
 
-- `tests/test_tmux_file_picker.py`:
+- `tests/test_termscope.py`:
   - Added `TestCapturePaneVisibleOnly` (asserts no `-S` flag).
   - Added `TestScanCommand` (JSON output shape).
   - Added `TestNoCandidates` (empty candidates → tmux message, no fzf).
@@ -48,7 +48,7 @@
 
 ### Verification
 
-- `python3 -m py_compile tmux-file-picker` ✅
+- `python3 -m py_compile termscope` ✅
 - `python3 -m unittest discover -s tests` — **50/50 pass** ✅
 - `tmux source-file ~/.tmux.conf` — no errors ✅
 
@@ -83,5 +83,5 @@
 - Fixed formula: `-S -scroll`; `-E pane_height-scroll-1` for shallow scroll, else `-E -(scroll-pane_height+1)` for deep history.
 - Added tests for deep and shallow copy-mode scroll (57 total, all pass).
 - Full relative paths now resolve directly against pane cwd/search root even when `fd` does not index them (important for gitignored `scripts/`).
-- Detached tmux repro verified: copy-mode `history-top` over visible `tests/test_tmux_file_picker.py` captures 46 viewport lines and returns 1 candidate.
+- Detached tmux repro verified: copy-mode `history-top` over visible `tests/test_termscope.py` captures 46 viewport lines and returns 1 candidate.
 - Remaining manual smoke: normal pane open, empty-candidate message, annotate in Pi pane, folder block.

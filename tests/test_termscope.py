@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for tmux-file-picker pure functions."""
+"""Unit tests for termscope pure functions."""
 
 import importlib.util
 import json
@@ -12,11 +12,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 # Load the script as a module since it has no .py extension.
-script_path = Path(__file__).parent.parent / "tmux-file-picker"
-loader = SourceFileLoader("tmux_file_picker", str(script_path.resolve()))
-spec = importlib.util.spec_from_loader("tmux_file_picker", loader)
+script_path = Path(__file__).parent.parent / "termscope"
+loader = SourceFileLoader("termscope", str(script_path.resolve()))
+spec = importlib.util.spec_from_loader("termscope", loader)
 tfp = importlib.util.module_from_spec(spec)
-sys.modules["tmux_file_picker"] = tfp
+sys.modules["termscope"] = tfp
 spec.loader.exec_module(tfp)
 
 
@@ -855,9 +855,9 @@ class TestSendAnnotateCommand(unittest.TestCase):
 
 class TestChooseDefaultOpener(unittest.TestCase):
     def test_env_override(self):
-        os.environ["TMUX_FILE_PICKER_OPENER"] = "custom-opener --flag"
+        os.environ["TERMSCOPE_OPENER"] = "custom-opener --flag"
         self.assertEqual(tfp.choose_default_opener(), ["custom-opener", "--flag"])
-        del os.environ["TMUX_FILE_PICKER_OPENER"]
+        del os.environ["TERMSCOPE_OPENER"]
 
     def test_macos(self):
         orig = sys.platform

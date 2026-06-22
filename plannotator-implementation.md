@@ -2,7 +2,7 @@
 
 ## Changes
 
-### 1. `tmux-file-picker` — `send_annotate_command()` hardened
+### 1. `termscope` — `send_annotate_command()` hardened
 
 - Checks source pane `#{pane_in_mode}` before sending the slash command.
 - If `1` (pane in copy mode), runs `tmux send-keys -t <pane> -X cancel` first.
@@ -10,7 +10,7 @@
 - After send, fires `tmux display-message "Plannotator annotation requested"`.
 - Folder blocking behavior unchanged (still guarded in `_open_target`).
 
-### 2. `tests/test_tmux_file_picker.py` — new `TestSendAnnotateCommand` class
+### 2. `tests/test_termscope.py` — new `TestSendAnnotateCommand` class
 
 Three new tests:
 - **`test_copy_mode_cancelled_before_slash`**: verifies that when `pane_in_mode=1`, cancel is sent before the slash command + Enter sequence, and the display-message fires.
@@ -39,6 +39,6 @@ All existing tests pass. All new tests pass.
 
 ## Files changed
 
-- `tmux-file-picker` — `send_annotate_command()` function (lines 577-603)
-- `tests/test_tmux_file_picker.py` — `TestSendAnnotateCommand` class (3 new tests)
+- `termscope` — `send_annotate_command()` function (lines 577-603)
+- `tests/test_termscope.py` — `TestSendAnnotateCommand` class (3 new tests)
 - `README.md` — Keys and Notes sections

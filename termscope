@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tmux-file-picker / herdr-file-picker — one-file Python picker for tmux and herdr."""
+"""termscope / termscope — one-file Python picker for tmux and herdr."""
 
 from __future__ import annotations
 
@@ -266,14 +266,14 @@ class HerdrBackend(MultiplexerBackend):
             check=False,
         )
         if result.returncode != 0:
-            print(f"tmux-file-picker: herdr pane split failed: {result.stderr}", file=sys.stderr)
+            print(f"termscope: herdr pane split failed: {result.stderr}", file=sys.stderr)
             sys.exit(1)
 
         try:
             data = json.loads(result.stdout)
             new_pane_id = data["result"]["pane"]["pane_id"]
         except (json.JSONDecodeError, KeyError) as exc:
-            print(f"tmux-file-picker: could not parse herdr split response: {exc}", file=sys.stderr)
+            print(f"termscope: could not parse herdr split response: {exc}", file=sys.stderr)
             sys.exit(1)
 
         nvim_cmd = f"nvim +{line} {shlex.quote(str(path))}" if line else f"nvim {shlex.quote(str(path))}"
@@ -319,11 +319,11 @@ def choose_backend(multiplexer: str, pane_id: str) -> MultiplexerBackend:
 # --------------------------------------------------------------------------- #
 
 def log_path() -> Path:
-    configured = os.environ.get("TMUX_FILE_PICKER_LOG")
+    configured = os.environ.get("TERMSCOPE_LOG")
     if configured:
         return Path(configured)
     cache_dir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    return cache_dir / "tmux-file-picker" / "tmux-file-picker.log"
+    return cache_dir / "termscope" / "termscope.log"
 
 
 def log_event(event: str, **data: object) -> None:
@@ -745,7 +745,7 @@ def _run_fzf(
             stdout=subprocess.PIPE,
         )
     except FileNotFoundError:
-        print("tmux-file-picker: fzf not found", file=sys.stderr)
+        print("termscope: fzf not found", file=sys.stderr)
         return None
 
     if proc.returncode >= 2:
@@ -801,7 +801,7 @@ def run_fzf_full_repo(search_root: Path, query: str) -> FzfResult | None:
             stdout=subprocess.PIPE,
         )
     except FileNotFoundError:
-        print("tmux-file-picker: fzf not found", file=sys.stderr)
+        print("termscope: fzf not found", file=sys.stderr)
         return None
 
     if proc.returncode >= 2:
@@ -832,7 +832,7 @@ def run_fallback_picker(search_root: Path, query: str) -> str | None:
             stdout=subprocess.PIPE,
         )
     except FileNotFoundError:
-        print("tmux-file-picker: fzf not found", file=sys.stderr)
+        print("termscope: fzf not found", file=sys.stderr)
         return None
     if proc.returncode >= 2:
         return None
@@ -845,7 +845,7 @@ def run_fallback_picker(search_root: Path, query: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 def choose_default_opener() -> list[str]:
-    env = os.environ.get("TMUX_FILE_PICKER_OPENER", "")
+    env = os.environ.get("TERMSCOPE_OPENER", "")
     if env:
         return shlex.split(env)
 
@@ -867,10 +867,10 @@ def choose_default_opener() -> list[str]:
 
 def _check_opener(opener: list[str]) -> None:
     if not opener:
-        sys.exit("tmux-file-picker: no opener configured")
+        sys.exit("termscope: no opener configured")
     exe = shutil.which(opener[0])
     if not exe:
-        sys.exit(f"tmux-file-picker: opener not found: {opener[0]}")
+        sys.exit(f"termscope: opener not found: {opener[0]}")
 
 
 def open_with_default_app(target: str | Path) -> NoReturn:
@@ -927,7 +927,7 @@ def show_message(message: str, backend: MultiplexerBackend | None = None) -> Non
 # --------------------------------------------------------------------------- #
 
 def debug_dump(state: DebugState) -> None:
-    debug_dir = os.environ.get("TMUX_FILE_PICKER_DEBUG_DIR", "")
+    debug_dir = os.environ.get("TERMSCOPE_DEBUG_DIR", "")
     if not debug_dir:
         return
 
@@ -968,7 +968,7 @@ def debug_dump(state: DebugState) -> None:
     for f in run_dir.iterdir():
         f.chmod(0o600)
 
-    print(f"tmux-file-picker debug: {run_dir}", file=sys.stderr)
+    print(f"termscope debug: {run_dir}", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -1008,7 +1008,7 @@ def _open_target(
         open_with_default_app(resolved)
     elif mode == "annotate":
         if resolved.is_dir() or (not resolved.exists() and "." not in parsed.path):
-            show_message("tmux-file-picker: annotate is for files only", backend)
+            show_message("termscope: annotate is for files only", backend)
             return
         send_annotate_command(pane_id, str(resolved), backend)
     else:
@@ -1288,7 +1288,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="tmux-file-picker")
+    parser = argparse.ArgumentParser(prog="termscope")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     pick_parser = subparsers.add_parser("pick")

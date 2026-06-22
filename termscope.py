@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Herdr plugin wrapper for tmux-file-picker.
+"""Herdr plugin wrapper for termscope.
 
 This script is invoked in two modes:
 
@@ -25,7 +25,7 @@ def herdr_bin() -> str:
 
 
 def plugin_id() -> str:
-    return os.environ.get("HERDR_PLUGIN_ID", "herdr-file-picker")
+    return os.environ.get("HERDR_PLUGIN_ID", "termscope")
 
 
 def plugin_root() -> str:
@@ -36,7 +36,7 @@ def get_source_pane() -> tuple[str, str]:
     """Return (pane_id, cwd) for the source pane."""
     pane_id = os.environ.get("HERDR_PANE_ID") or os.environ.get("HERDR_ACTIVE_PANE_ID")
     if not pane_id:
-        print("herdr-file-picker: no source pane id", file=sys.stderr)
+        print("termscope: no source pane id", file=sys.stderr)
         sys.exit(1)
 
     result = subprocess.run(
@@ -46,14 +46,14 @@ def get_source_pane() -> tuple[str, str]:
         check=False,
     )
     if result.returncode != 0:
-        print(f"herdr-file-picker: pane get failed: {result.stderr}", file=sys.stderr)
+        print(f"termscope: pane get failed: {result.stderr}", file=sys.stderr)
         sys.exit(1)
 
     try:
         data = json.loads(result.stdout)
         cwd = data["result"]["pane"]["cwd"]
     except (json.JSONDecodeError, KeyError) as exc:
-        print(f"herdr-file-picker: bad pane get response: {exc}", file=sys.stderr)
+        print(f"termscope: bad pane get response: {exc}", file=sys.stderr)
         sys.exit(1)
 
     return pane_id, cwd
@@ -86,10 +86,10 @@ def run_picker(subcommand: str) -> None:
     pane_id = os.environ.get("SOURCE_PANE_ID")
     cwd = os.environ.get("SOURCE_PANE_CWD")
     if not pane_id or not cwd:
-        print("herdr-file-picker: missing SOURCE_PANE_ID or SOURCE_PANE_CWD", file=sys.stderr)
+        print("termscope: missing SOURCE_PANE_ID or SOURCE_PANE_CWD", file=sys.stderr)
         sys.exit(1)
 
-    script = os.path.join(plugin_root(), "tmux-file-picker")
+    script = os.path.join(plugin_root(), "termscope")
     subprocess.run(
         [
             sys.executable,

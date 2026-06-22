@@ -9,10 +9,10 @@ Subagent critique captured in `subagent-critique.md`: visible picker makes sense
 ## Phase 0: Instrument the development loop
 
 1. **Add a non-interactive scan/debug path**
-   - Touch: `tmux-file-picker`, tests, README.
+   - Touch: `termscope`, tests, README.
    - Add a `scan` subcommand, or equivalent dry-run mode, that captures the source pane, extracts candidates, and prints JSON without opening fzf or launching actions.
    - JSON should include at least: `pane_id`, `source_pane_path`, `search_root`, `screen_line_count`, `indexed_count`, `candidate_count`, `candidates`, and whether capture was visible-only.
-   - Extend existing `TMUX_FILE_PICKER_DEBUG_DIR` output to include enough state to diagnose capture, candidate extraction, fzf decisions, no-candidate exits, and action dispatch.
+   - Extend existing `TERMSCOPE_DEBUG_DIR` output to include enough state to diagnose capture, candidate extraction, fzf decisions, no-candidate exits, and action dispatch.
    - Verification:
      - Unit tests cover the JSON shape and no-action behavior.
      - Manual command can run against the current pane and append result notes to `goals/visible-screen-picker/dev-log.md`.
@@ -33,7 +33,7 @@ Subagent critique captured in `subagent-critique.md`: visible picker makes sense
 ## Phase 1: Visible-screen picker and open actions
 
 3. **Make pane capture truly visible-only**
-   - Touch: `tmux-file-picker`, tests in `tests/test_tmux_file_picker.py`.
+   - Touch: `termscope`, tests in `tests/test_termscope.py`.
    - Change `capture_pane_text` to call `tmux capture-pane -pJ` without `-S -<limit>`.
    - Remove or stop using the `--limit` picker argument.
    - Keep stripping ANSI after capture.
@@ -102,7 +102,7 @@ Subagent critique captured in `subagent-critique.md`: visible picker makes sense
      - Unit tests for fzf command args/header.
 
 10. **Implement Pi-agent annotation by sending the slash command literally**
-    - Touch: `tmux-file-picker`, tests.
+    - Touch: `termscope`, tests.
     - Add an annotate mode that resolves the selected path and strips any line number.
     - If the resolved path is a folder, show a tmux message and do not send `/plannotator-annotate`.
     - If the resolved path is a file, send `/plannotator-annotate <file>` plus Enter to the source pane.
@@ -131,13 +131,13 @@ Subagent critique captured in `subagent-critique.md`: visible picker makes sense
     - Document strict visible-only behavior, no repo-wide fallback, no-candidate message, instrumentation, `scan`/dry-run usage, and fzf actions.
     - Document that annotation is file-only and sends `/plannotator-annotate` to the source pane with `Ctrl-y`.
     - Verification:
-      - `rg -n "C-S-a|ctrl-y|--limit|plannotator-annotate|scan|TMUX_FILE_PICKER_DEBUG_DIR" README.md /path/to/user/.tmux.conf`.
+      - `rg -n "C-S-a|ctrl-y|--limit|plannotator-annotate|scan|TERMSCOPE_DEBUG_DIR" README.md /path/to/user/.tmux.conf`.
       - `tmux source-file ~/.tmux.conf`.
 
 13. **Final verification**
     - Run:
       - `python3 -m unittest discover -s tests`
-      - `python3 -m py_compile tmux-file-picker`
+      - `python3 -m py_compile termscope`
     - Manual smoke:
       - Normal pane: visible file path → `C-S-a` → Enter opens nvim.
       - Normal pane: visible file path → `C-S-a` → Ctrl-o opens default app.

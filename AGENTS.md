@@ -2,7 +2,7 @@
 
 ## Project
 
-`tmux-file-picker` is a small terminal integration tool. Keep it portable, boring, and easy to wire into other agents.
+`termscope` is a small terminal integration tool. Keep it portable, boring, and easy to wire into other agents.
 
 ## First stop
 
@@ -35,13 +35,13 @@ For code changes, run:
 
 ```sh
 python3 -m unittest discover -s tests
-python3 -m py_compile tmux-file-picker
+python3 -m py_compile termscope
 ```
 
 For picker behavior, prefer the dry-run path first:
 
 ```sh
-./tmux-file-picker scan --pane-path "$PWD" --pane-id "$TMUX_PANE"
+./termscope scan --pane-path "$PWD" --pane-id "$TMUX_PANE"
 ```
 
 Manual smoke matters for tmux behavior: normal pane, copy-mode scrolled viewport, no visible files, Enter to nvim, Ctrl-o default opener, and Ctrl-y agent annotation when touched.
