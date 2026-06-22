@@ -1,6 +1,6 @@
 # tmux-file-picker
 
-A tmux file picker for opening files mentioned in the currently visible pane output.
+A tmux / Herdr file picker for opening files mentioned in the currently visible pane output.
 
 ## What it does
 
@@ -25,7 +25,7 @@ Inside the file picker:
 
 Inside the link picker:
 
-- `Enter` opens the selected URL with the default app (browser).
+- `Enter` opens the selected URL in Zen (falls back to the default app on non-macOS).
 - `Ctrl-y` copies the selected URL to the clipboard.
 
 In tmux copy mode:
@@ -39,6 +39,7 @@ In tmux copy mode:
 ## Script
 
 - `tmux-file-picker` — single Python script with `pick`, `links`, `open`, `fallback`, and `scan` subcommands.
+- `herdr-plugin.toml` + `herdr-file-picker.py` — Herdr plugin wrapper that opens the picker in an overlay pane.
 
 ## Dry-run / Debug
 
@@ -62,7 +63,7 @@ The debug directory path is printed to stderr.
 
 ## Dependencies
 
-- `tmux`
+- `tmux` or `herdr`
 - `fd`
 - `fzf`
 - `python3`
@@ -70,6 +71,8 @@ The debug directory path is printed to stderr.
 - A default opener: macOS `open`, WSL `wslview`, or Linux `xdg-open`
 
 Override the opener with the `TMUX_FILE_PICKER_OPENER` environment variable.
+
+The script auto-detects the multiplexer from the pane id shape (`%1` for tmux, `w1:p1` for Herdr). Use `--multiplexer tmux|herdr` to force a backend.
 
 ## tmux config
 
@@ -91,10 +94,43 @@ bind-key -T copy-mode-vi P run-shell "tmux display-popup -E -w 80% -h 60% '/path
 bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/tmux-file-picker/tmux-file-picker links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 ```
 
+## Herdr config
+
+Install the plugin from the repo root:
+
+```sh
+herdr plugin link /path/to/user/scripts/tmux-file-picker
+```
+
+Add keybindings to `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "ctrl+shift+a"
+type = "plugin_action"
+command = "herdr-file-picker.open"
+description = "visible-screen file picker"
+
+[[keys.command]]
+key = "ctrl+e"
+type = "plugin_action"
+command = "herdr-file-picker.open-links"
+description = "visible-screen link picker"
+```
+
+Then reload Herdr config:
+
+```sh
+herdr server reload-config
+```
+
+The plugin opens an overlay pane, runs fzf over the visible files/links in the source pane, and dispatches the chosen action back through Herdr.
+
 ## Tests
 
 ```sh
 python3 -m unittest discover -s tests
+python3 -m py_compile tmux-file-picker herdr-file-picker.py
 ```
 
 ## Notes

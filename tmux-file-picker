@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tmux-file-picker — one-file Python replacement for the shell scripts."""
+"""tmux-file-picker / herdr-file-picker — one-file Python picker for tmux and herdr."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import subprocess
 import sys
 import traceback
 import uuid
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +60,261 @@ class DebugState:
 
 
 # --------------------------------------------------------------------------- #
+# Multiplexer backend abstraction
+# --------------------------------------------------------------------------- #
+
+class MultiplexerBackend(ABC):
+    """Abstracts tmux- and herdr-specific control commands."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        ...
+
+    @abstractmethod
+    def resolve_source_pane_path(self, pane_path: Path, pane_id: str) -> Path:
+        """Return the best cwd for the source pane."""
+        ...
+
+    @abstractmethod
+    def capture_pane_text(self, pane_id: str) -> str:
+        """Return the currently visible text from the source pane."""
+        ...
+
+    @abstractmethod
+    def open_in_nvim_split(
+        self, path: Path, line: str, pane_path: Path, pane_id: str
+    ) -> NoReturn:
+        """Open path in a new nvim split next to the source pane, then exit."""
+        ...
+
+    @abstractmethod
+    def send_annotate_command(self, pane_id: str, file_path: str) -> None:
+        """Send /plannotator-annotate <file_path> + Enter to the source pane."""
+        ...
+
+    @abstractmethod
+    def show_message(self, message: str) -> None:
+        """Show a short, non-blocking message to the user."""
+        ...
+
+
+class TmuxBackend(MultiplexerBackend):
+    @property
+    def name(self) -> str:
+        return "tmux"
+
+    def resolve_source_pane_path(self, pane_path: Path, pane_id: str) -> Path:
+        if pane_id:
+            try:
+                result = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_current_path}"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                p = result.stdout.strip()
+                if p and Path(p).is_dir():
+                    return Path(p)
+            except FileNotFoundError:
+                pass
+        return pane_path
+
+    def capture_pane_text(self, pane_id: str) -> str:
+        cmd = ["tmux", "capture-pane", "-pJ"]
+
+        # If the source pane is in copy mode, capture the scrolled viewport
+        # instead of the live bottom content. This only works if the binding does
+        # not cancel copy mode before launching this script.
+        if pane_id:
+            mode_result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_in_mode}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if mode_result.stdout.strip() == "1":
+                scroll_result = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", pane_id, "#{scroll_position}"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                height_result = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_height}"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                scroll_str = scroll_result.stdout.strip()
+                height_str = height_result.stdout.strip()
+                if scroll_str.isdigit() and height_str.isdigit():
+                    scroll = int(scroll_str)
+                    height = int(height_str)
+                    if scroll > 0 and height > 0:
+                        if scroll < height:
+                            end = str(height - scroll - 1)
+                        else:
+                            end = f"-{scroll - height + 1}"
+                        cmd.extend(["-S", f"-{scroll}", "-E", end])
+                        log_event(
+                            "capture_scrollback_viewport",
+                            pane_id=pane_id,
+                            scroll_position=scroll,
+                            pane_height=height,
+                            start=f"-{scroll}",
+                            end=end,
+                        )
+
+            cmd.extend(["-t", pane_id])
+
+        result = subprocess.run(cmd, text=True, capture_output=True, check=False)
+        return result.stdout
+
+    def open_in_nvim_split(
+        self, path: Path, line: str, pane_path: Path, pane_id: str
+    ) -> NoReturn:
+        cmd = ["nvim", f"+{line}", str(path)] if line else ["nvim", str(path)]
+        inner = shlex.join(cmd)
+
+        tmux_cmd = ["tmux", "split-window"]
+        if pane_id:
+            tmux_cmd += ["-t", pane_id]
+        tmux_cmd += ["-h", "-c", str(pane_path), inner]
+
+        os.execvp(tmux_cmd[0], tmux_cmd)
+
+    def send_annotate_command(self, pane_id: str, file_path: str) -> None:
+        # Cancel copy mode if the source pane is in it, so the slash command
+        # reaches Pi's prompt instead of being swallowed by copy mode.
+        mode_result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_in_mode}"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if mode_result.stdout.strip() == "1":
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
+                check=False,
+            )
+
+        quoted_path = shlex.quote(file_path)
+        cmd_text = f"/plannotator-annotate {quoted_path}"
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "-l", cmd_text],
+            check=False,
+        )
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "Enter"],
+            check=False,
+        )
+        self.show_message("Plannotator annotation requested")
+
+    def show_message(self, message: str) -> None:
+        subprocess.run(
+            ["tmux", "display-message", message],
+            check=False,
+        )
+
+
+class HerdrBackend(MultiplexerBackend):
+    @property
+    def name(self) -> str:
+        return "herdr"
+
+    def _herdr_bin(self) -> str:
+        return shutil.which("herdr") or "herdr"
+
+    def resolve_source_pane_path(self, pane_path: Path, pane_id: str) -> Path:
+        if not pane_id:
+            return pane_path
+        try:
+            result = subprocess.run(
+                [self._herdr_bin(), "pane", "get", pane_id],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return pane_path
+            data = json.loads(result.stdout)
+            p = data.get("result", {}).get("pane", {}).get("cwd", "")
+            if p and Path(p).is_dir():
+                return Path(p)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        return pane_path
+
+    def capture_pane_text(self, pane_id: str) -> str:
+        result = subprocess.run(
+            [self._herdr_bin(), "pane", "read", pane_id, "--source", "visible"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.stdout
+
+    def open_in_nvim_split(
+        self, path: Path, line: str, pane_path: Path, pane_id: str
+    ) -> NoReturn:
+        herdr = self._herdr_bin()
+        result = subprocess.run(
+            [herdr, "pane", "split", pane_id, "--direction", "right", "--cwd", str(pane_path)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            print(f"tmux-file-picker: herdr pane split failed: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            data = json.loads(result.stdout)
+            new_pane_id = data["result"]["pane"]["pane_id"]
+        except (json.JSONDecodeError, KeyError) as exc:
+            print(f"tmux-file-picker: could not parse herdr split response: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        nvim_cmd = f"nvim +{line} {shlex.quote(str(path))}" if line else f"nvim {shlex.quote(str(path))}"
+        subprocess.run(
+            [herdr, "pane", "run", new_pane_id, nvim_cmd],
+            check=False,
+        )
+        sys.exit(0)
+
+    def send_annotate_command(self, pane_id: str, file_path: str) -> None:
+        herdr = self._herdr_bin()
+        quoted_path = shlex.quote(file_path)
+        subprocess.run(
+            [herdr, "pane", "run", pane_id, f"/plannotator-annotate {quoted_path}"],
+            check=False,
+        )
+        self.show_message("Plannotator annotation requested")
+
+    def show_message(self, message: str) -> None:
+        subprocess.run(
+            [self._herdr_bin(), "notification", "show", message],
+            check=False,
+        )
+
+
+def detect_backend(pane_id: str) -> MultiplexerBackend:
+    """Pick a backend from the pane id shape."""
+    if pane_id and re.match(r"^w\d+:p", pane_id):
+        return HerdrBackend()
+    return TmuxBackend()
+
+
+def choose_backend(multiplexer: str, pane_id: str) -> MultiplexerBackend:
+    if multiplexer == "tmux":
+        return TmuxBackend()
+    if multiplexer == "herdr":
+        return HerdrBackend()
+    return detect_backend(pane_id)
+
+
+# --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
 
@@ -91,21 +347,12 @@ def log_event(event: str, **data: object) -> None:
 # Path / pane helpers
 # --------------------------------------------------------------------------- #
 
-def resolve_source_pane_path(pane_path: Path, pane_id: str) -> Path:
-    if pane_id:
-        try:
-            result = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_current_path}"],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            p = result.stdout.strip()
-            if p and Path(p).is_dir():
-                return Path(p)
-        except FileNotFoundError:
-            pass
-    return pane_path
+def resolve_source_pane_path(
+    pane_path: Path, pane_id: str, backend: MultiplexerBackend | None = None
+) -> Path:
+    if backend is None:
+        backend = detect_backend(pane_id)
+    return backend.resolve_source_pane_path(pane_path, pane_id)
 
 
 def find_search_root(pane_path: Path) -> Path:
@@ -128,56 +375,10 @@ def find_search_root(pane_path: Path) -> Path:
 # Pane capture
 # --------------------------------------------------------------------------- #
 
-def capture_pane_text(pane_id: str) -> str:
-    cmd = ["tmux", "capture-pane", "-pJ"]
-
-    # If the source pane is in copy mode, capture the scrolled viewport
-    # instead of the live bottom content. This only works if the binding does
-    # not cancel copy mode before launching this script.
-    if pane_id:
-        mode_result = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_in_mode}"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if mode_result.stdout.strip() == "1":
-            scroll_result = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", pane_id, "#{scroll_position}"],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            height_result = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_height}"],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            scroll_str = scroll_result.stdout.strip()
-            height_str = height_result.stdout.strip()
-            if scroll_str.isdigit() and height_str.isdigit():
-                scroll = int(scroll_str)
-                height = int(height_str)
-                if scroll > 0 and height > 0:
-                    if scroll < height:
-                        end = str(height - scroll - 1)
-                    else:
-                        end = f"-{scroll - height + 1}"
-                    cmd.extend(["-S", f"-{scroll}", "-E", end])
-                    log_event(
-                        "capture_scrollback_viewport",
-                        pane_id=pane_id,
-                        scroll_position=scroll,
-                        pane_height=height,
-                        start=f"-{scroll}",
-                        end=end,
-                    )
-
-        cmd.extend(["-t", pane_id])
-
-    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
-    return result.stdout
+def capture_pane_text(pane_id: str, backend: MultiplexerBackend | None = None) -> str:
+    if backend is None:
+        backend = detect_backend(pane_id)
+    return backend.capture_pane_text(pane_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -567,7 +768,7 @@ def run_fzf_visible(
 def run_fzf_links(candidates: list[str]) -> FzfResult | None:
     return _run_fzf(
         candidates,
-        "visible links | enter=open  ctrl-y=copy",
+        "visible links | enter=open in Zen  ctrl-y=copy",
         "enter,ctrl-y",
     )
 
@@ -678,16 +879,25 @@ def open_with_default_app(target: str | Path) -> NoReturn:
     os.execvp(opener[0], opener + [str(target)])
 
 
-def open_in_nvim_split(path: Path, line: str, pane_path: Path, pane_id: str) -> NoReturn:
-    cmd = ["nvim", f"+{line}", str(path)] if line else ["nvim", str(path)]
-    inner = shlex.join(cmd)
+def open_url(url: str) -> NoReturn:
+    """Open a URL in Zen on macOS, otherwise fall back to the default app."""
+    if sys.platform == "darwin":
+        opener = ["open", "-a", "Zen"]
+        _check_opener(opener)
+        os.execvp(opener[0], opener + [url])
+    open_with_default_app(url)
 
-    tmux_cmd = ["tmux", "split-window"]
-    if pane_id:
-        tmux_cmd += ["-t", pane_id]
-    tmux_cmd += ["-h", "-c", str(pane_path), inner]
 
-    os.execvp(tmux_cmd[0], tmux_cmd)
+def open_in_nvim_split(
+    path: Path,
+    line: str,
+    pane_path: Path,
+    pane_id: str,
+    backend: MultiplexerBackend | None = None,
+) -> NoReturn:
+    if backend is None:
+        backend = detect_backend(pane_id)
+    backend.open_in_nvim_split(path, line, pane_path, pane_id)
 
 
 def copy_to_clipboard(text: str) -> None:
@@ -697,35 +907,19 @@ def copy_to_clipboard(text: str) -> None:
         pass
 
 
-def send_annotate_command(pane_id: str, file_path: str) -> None:
-    # Cancel copy mode if the source pane is in it, so the slash command
-    # reaches Pi's prompt instead of being swallowed by copy mode.
-    mode_result = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_in_mode}"],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if mode_result.stdout.strip() == "1":
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
-            check=False,
-        )
+def send_annotate_command(
+    pane_id: str, file_path: str, backend: MultiplexerBackend | None = None
+) -> None:
+    if backend is None:
+        backend = detect_backend(pane_id)
+    backend.send_annotate_command(pane_id, file_path)
 
-    quoted_path = shlex.quote(file_path)
-    cmd_text = f"/plannotator-annotate {quoted_path}"
-    subprocess.run(
-        ["tmux", "send-keys", "-t", pane_id, "-l", cmd_text],
-        check=False,
-    )
-    subprocess.run(
-        ["tmux", "send-keys", "-t", pane_id, "Enter"],
-        check=False,
-    )
-    subprocess.run(
-        ["tmux", "display-message", "Plannotator annotation requested"],
-        check=False,
-    )
+
+def show_message(message: str, backend: MultiplexerBackend | None = None) -> None:
+    if backend is None:
+        # Default to tmux when no pane context is available.
+        backend = TmuxBackend()
+    backend.show_message(message)
 
 
 # --------------------------------------------------------------------------- #
@@ -788,8 +982,11 @@ def _open_target(
     pane_id: str,
     search_root: Path,
     state: DebugState,
+    backend: MultiplexerBackend | None = None,
     inline: bool = True,
 ) -> None:
+    if backend is None:
+        backend = detect_backend(pane_id)
     parsed = parse_selected_target(target_text)
     if not parsed.path:
         debug_dump(state)
@@ -811,14 +1008,11 @@ def _open_target(
         open_with_default_app(resolved)
     elif mode == "annotate":
         if resolved.is_dir() or (not resolved.exists() and "." not in parsed.path):
-            subprocess.run(
-                ["tmux", "display-message", "tmux-file-picker: annotate is for files only"],
-                check=False,
-            )
+            show_message("tmux-file-picker: annotate is for files only", backend)
             return
-        send_annotate_command(pane_id, str(resolved))
+        send_annotate_command(pane_id, str(resolved), backend)
     else:
-        open_in_nvim_split(resolved, parsed.line, pane_path, pane_id)
+        open_in_nvim_split(resolved, parsed.line, pane_path, pane_id, backend)
 
 
 def _open_fallback_popup(
@@ -851,10 +1045,11 @@ def _open_fallback_popup(
 def cmd_pick(args: argparse.Namespace) -> None:
     pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
     pane_id = args.pane_id or ""
-    source_pane_path = resolve_source_pane_path(pane_path, pane_id)
+    backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
+    source_pane_path = resolve_source_pane_path(pane_path, pane_id, backend)
     search_root = find_search_root(source_pane_path)
 
-    screen_text = capture_pane_text(pane_id)
+    screen_text = capture_pane_text(pane_id, backend)
     screen_text = strip_ansi(screen_text)
     repo_paths = list_repo_files(search_root)
     candidates = extract_visible_candidates(
@@ -896,6 +1091,7 @@ def cmd_pick(args: argparse.Namespace) -> None:
         indexed_count=len(repo_paths),
         candidate_count=len(real_candidates) if not visible_empty else 0,
         fallback=visible_empty,
+        backend=backend.name,
     )
 
     if visible_empty:
@@ -903,10 +1099,7 @@ def cmd_pick(args: argparse.Namespace) -> None:
         # is never empty.
         fzf_result = run_fzf_full_repo(search_root, "")
         if fzf_result is None:
-            subprocess.run(
-                ["tmux", "display-message", "No files found in repo"],
-                check=False,
-            )
+            show_message("No files found in repo", backend)
             log_event("pick_empty_repo", pane_id=pane_id)
             debug_dump(state)
             return
@@ -935,14 +1128,15 @@ def cmd_pick(args: argparse.Namespace) -> None:
     else:
         mode = "nvim"
 
-    _open_target(mode, selection, source_pane_path, pane_id, search_root, state=state)
+    _open_target(mode, selection, source_pane_path, pane_id, search_root, state=state, backend=backend)
 
 
 def cmd_open(args: argparse.Namespace) -> None:
     pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
     pane_id = args.pane_id or ""
     mode = args.mode
-    source_pane_path = resolve_source_pane_path(pane_path, pane_id)
+    backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
+    source_pane_path = resolve_source_pane_path(pane_path, pane_id, backend)
     search_root = find_search_root(source_pane_path)
 
     target = sys.stdin.read()
@@ -955,7 +1149,7 @@ def cmd_open(args: argparse.Namespace) -> None:
         mode=mode,
     )
 
-    _open_target(mode, target, source_pane_path, pane_id, search_root, state=state)
+    _open_target(mode, target, source_pane_path, pane_id, search_root, state=state, backend=backend)
 
 
 def cmd_fallback(args: argparse.Namespace) -> None:
@@ -964,7 +1158,8 @@ def cmd_fallback(args: argparse.Namespace) -> None:
     mode = args.mode
     query = args.query
     line = args.line or ""
-    source_pane_path = resolve_source_pane_path(pane_path, pane_id)
+    backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
+    source_pane_path = resolve_source_pane_path(pane_path, pane_id, backend)
     search_root = find_search_root(source_pane_path)
 
     state = DebugState(
@@ -994,14 +1189,15 @@ def cmd_fallback(args: argparse.Namespace) -> None:
     if mode == "default":
         open_with_default_app(resolved)
     else:
-        open_in_nvim_split(resolved, line, source_pane_path, pane_id)
+        open_in_nvim_split(resolved, line, source_pane_path, pane_id, backend)
 
 
 def cmd_links(args: argparse.Namespace) -> None:
     pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
     pane_id = args.pane_id or ""
+    backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
 
-    screen_text = capture_pane_text(pane_id)
+    screen_text = capture_pane_text(pane_id, backend)
     screen_text = strip_ansi(screen_text)
     candidates = extract_visible_links(screen_text)
 
@@ -1019,10 +1215,7 @@ def cmd_links(args: argparse.Namespace) -> None:
 
     real_candidates = [c for c in candidates if c.strip()]
     if not real_candidates:
-        subprocess.run(
-            ["tmux", "display-message", "No visible links found"],
-            check=False,
-        )
+        show_message("No visible links found", backend)
         log_event("links_empty", pane_id=pane_id)
         debug_dump(state)
         return
@@ -1032,6 +1225,7 @@ def cmd_links(args: argparse.Namespace) -> None:
         pane_path=str(pane_path),
         pane_id=pane_id,
         candidate_count=len(real_candidates),
+        backend=backend.name,
     )
 
     fzf_result = run_fzf_links(real_candidates)
@@ -1055,22 +1249,20 @@ def cmd_links(args: argparse.Namespace) -> None:
     debug_dump(state)
 
     if fzf_result.key == "ctrl-y":
-        subprocess.run(
-            ["tmux", "display-message", "Link copied to clipboard"],
-            check=False,
-        )
+        show_message("Link copied to clipboard", backend)
         return
 
-    open_with_default_app(selection)
+    open_url(selection)
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
     pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
     pane_id = args.pane_id or ""
-    source_pane_path = resolve_source_pane_path(pane_path, pane_id)
+    backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
+    source_pane_path = resolve_source_pane_path(pane_path, pane_id, backend)
     search_root = find_search_root(source_pane_path)
 
-    screen_text = capture_pane_text(pane_id)
+    screen_text = capture_pane_text(pane_id, backend)
     screen_text = strip_ansi(screen_text)
     repo_paths = list_repo_files(search_root)
     candidates = extract_visible_candidates(
@@ -1086,6 +1278,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
         "candidate_count": len(candidates),
         "candidates": candidates,
         "visible_only": True,
+        "backend": backend.name,
     }
     print(json.dumps(result, indent=2))
 
@@ -1101,11 +1294,13 @@ def main() -> None:
     pick_parser = subparsers.add_parser("pick")
     pick_parser.add_argument("--pane-path", required=True)
     pick_parser.add_argument("--pane-id", required=True)
+    pick_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
 
     open_parser = subparsers.add_parser("open")
     open_parser.add_argument("--mode", choices=["nvim", "default"], required=True)
     open_parser.add_argument("--pane-path", required=True)
     open_parser.add_argument("--pane-id", required=True)
+    open_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
 
     fallback_parser = subparsers.add_parser("fallback")
     fallback_parser.add_argument("--mode", choices=["nvim", "default"], required=True)
@@ -1113,14 +1308,17 @@ def main() -> None:
     fallback_parser.add_argument("--pane-id", required=True)
     fallback_parser.add_argument("--query", required=True)
     fallback_parser.add_argument("--line", default="")
+    fallback_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
 
     scan_parser = subparsers.add_parser("scan")
     scan_parser.add_argument("--pane-path", required=True)
     scan_parser.add_argument("--pane-id", required=True)
+    scan_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
 
     links_parser = subparsers.add_parser("links")
     links_parser.add_argument("--pane-path", required=True)
     links_parser.add_argument("--pane-id", required=True)
+    links_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
 
     args = parser.parse_args()
     log_event("start", command=args.command, argv=sys.argv[1:])

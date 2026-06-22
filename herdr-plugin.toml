@@ -1,0 +1,30 @@
+id = "herdr-file-picker"
+name = "Herdr File Picker"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Visible-screen file and link picker for Herdr."
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "open"
+title = "Open visible file picker"
+contexts = ["workspace"]
+command = ["python3", "herdr-file-picker.py", "--open-pane"]
+
+[[actions]]
+id = "open-links"
+title = "Open visible link picker"
+contexts = ["workspace"]
+command = ["python3", "herdr-file-picker.py", "--open-links-pane"]
+
+[[panes]]
+id = "picker"
+title = "File Picker"
+placement = "overlay"
+command = ["python3", "herdr-file-picker.py"]
+
+[[panes]]
+id = "link-picker"
+title = "Link Picker"
+placement = "overlay"
+command = ["python3", "herdr-file-picker.py", "--links"]

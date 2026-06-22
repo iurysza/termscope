@@ -880,5 +880,123 @@ class TestChooseDefaultOpener(unittest.TestCase):
             sys.platform = orig
 
 
+class TestOpenUrl(unittest.TestCase):
+    def test_macos_uses_safari(self):
+        with patch.object(tfp.sys, "platform", "darwin"), \
+             patch.object(tfp.os, "execvp") as mock_exec:
+            # os.execvp replaces the process and never returns; simulate that.
+            mock_exec.side_effect = SystemExit(0)
+            with self.assertRaises(SystemExit):
+                tfp.open_url("https://example.com")
+
+        mock_exec.assert_called_once_with(
+            "open",
+            ["open", "-a", "Zen", "https://example.com"],
+        )
+
+    def test_non_macos_falls_back_to_default_app(self):
+        with patch.object(tfp.sys, "platform", "linux"), \
+             patch.object(tfp, "open_with_default_app") as mock_default:
+            tfp.open_url("https://example.com")
+
+        mock_default.assert_called_once_with("https://example.com")
+
+
+class TestLinkPickerHeader(unittest.TestCase):
+    def test_links_header_mentions_safari(self):
+        completed = SimpleNamespace(returncode=1, stdout="query\nenter\nhttps://example.com")
+        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
+            result = tfp.run_fzf_links(["https://example.com"])
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.key, "enter")
+        cmd = run.call_args.args[0]
+        header_idx = cmd.index("--header")
+        self.assertIn("Zen", cmd[header_idx + 1])
+
+
+class TestBackendDetection(unittest.TestCase):
+    def test_tmux_pane_id(self):
+        self.assertIsInstance(tfp.detect_backend("%1"), tfp.TmuxBackend)
+        self.assertIsInstance(tfp.detect_backend("%42"), tfp.TmuxBackend)
+
+    def test_herdr_pane_id(self):
+        self.assertIsInstance(tfp.detect_backend("w1:p1"), tfp.HerdrBackend)
+        self.assertIsInstance(tfp.detect_backend("w12:pT"), tfp.HerdrBackend)
+
+    def test_empty_defaults_to_tmux(self):
+        self.assertIsInstance(tfp.detect_backend(""), tfp.TmuxBackend)
+
+
+class TestHerdrBackend(unittest.TestCase):
+    def test_resolve_source_pane_path_parses_cwd(self):
+        backend = tfp.HerdrBackend()
+        pane_json = json.dumps({
+            "result": {
+                "pane": {"cwd": "/tmp/repo", "pane_id": "w1:p1"}
+            }
+        })
+
+        with patch.object(tfp.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=pane_json)) as run, \
+             patch.object(backend, "_herdr_bin", return_value="herdr"):
+            result = backend.resolve_source_pane_path(Path("/fallback"), "w1:p1")
+
+        self.assertEqual(result, Path("/tmp/repo"))
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[:3], ["herdr", "pane", "get"])
+        self.assertEqual(cmd[3], "w1:p1")
+
+    def test_resolve_source_pane_path_falls_back(self):
+        backend = tfp.HerdrBackend()
+        with patch.object(tfp.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")), \
+             patch.object(backend, "_herdr_bin", return_value="herdr"):
+            result = backend.resolve_source_pane_path(Path("/fallback"), "w1:p1")
+        self.assertEqual(result, Path("/fallback"))
+
+    def test_capture_pane_text_reads_visible(self):
+        backend = tfp.HerdrBackend()
+        with patch.object(tfp.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="line1\nline2\n")) as run, \
+             patch.object(backend, "_herdr_bin", return_value="herdr"):
+            result = backend.capture_pane_text("w1:p1")
+        self.assertEqual(result, "line1\nline2\n")
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd, ["herdr", "pane", "read", "w1:p1", "--source", "visible"])
+
+    def test_send_annotate_command_runs_slash_command(self):
+        backend = tfp.HerdrBackend()
+        with patch.object(tfp.subprocess, "run") as run, \
+             patch.object(backend, "_herdr_bin", return_value="herdr"):
+            backend.send_annotate_command("w1:p1", "/tmp/repo/src/main.py")
+
+        calls = run.call_args_list
+        self.assertEqual(calls[0].args[0][:3], ["herdr", "pane", "run"])
+        self.assertEqual(calls[0].args[0][3], "w1:p1")
+        self.assertIn("/plannotator-annotate", calls[0].args[0][4])
+        self.assertIn("/tmp/repo/src/main.py", calls[0].args[0][4])
+
+        self.assertEqual(calls[1].args[0][:3], ["herdr", "notification", "show"])
+
+    def test_open_in_nvim_split_splits_then_runs(self):
+        backend = tfp.HerdrBackend()
+        split_json = json.dumps({
+            "result": {"pane": {"pane_id": "w1:p2"}}
+        })
+
+        with patch.object(tfp.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=split_json)) as run, \
+             patch.object(backend, "_herdr_bin", return_value="herdr"), \
+             patch.object(tfp.sys, "exit") as mock_exit:
+            backend.open_in_nvim_split(Path("/tmp/repo/src/main.py"), "12", Path("/tmp/repo"), "w1:p1")
+
+        calls = run.call_args_list
+        self.assertEqual(calls[0].args[0], [
+            "herdr", "pane", "split", "w1:p1", "--direction", "right", "--cwd", "/tmp/repo"
+        ])
+        self.assertEqual(calls[1].args[0][:3], ["herdr", "pane", "run"])
+        self.assertEqual(calls[1].args[0][3], "w1:p2")
+        self.assertIn("nvim", calls[1].args[0][4])
+        self.assertIn("+12", calls[1].args[0][4])
+        mock_exit.assert_called_once_with(0)
+
+
 if __name__ == "__main__":
     unittest.main()
