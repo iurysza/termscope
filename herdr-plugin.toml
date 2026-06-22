@@ -1,30 +1,30 @@
 id = "termscope"
-name = "Herdr File Picker"
+name = "Termscope"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "Visible-screen file and link picker for Herdr."
+description = "Open files and links that are already on screen."
 platforms = ["linux", "macos", "windows"]
 
 [[actions]]
 id = "open"
 title = "Open visible file picker"
 contexts = ["workspace"]
-command = ["python3", "termscope.py", "--open-pane"]
+command = ["python3", "termscope_herdr.py", "--open-pane"]
 
 [[actions]]
 id = "open-links"
 title = "Open visible link picker"
 contexts = ["workspace"]
-command = ["python3", "termscope.py", "--open-links-pane"]
+command = ["python3", "termscope_herdr.py", "--open-links-pane"]
 
 [[panes]]
 id = "picker"
 title = "File Picker"
 placement = "overlay"
-command = ["python3", "termscope.py"]
+command = ["python3", "termscope_herdr.py"]
 
 [[panes]]
 id = "link-picker"
 title = "Link Picker"
 placement = "overlay"
-command = ["python3", "termscope.py", "--links"]
+command = ["python3", "termscope_herdr.py", "--links"]

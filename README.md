@@ -1,105 +1,93 @@
 # termscope
 
-A tmux / Herdr file picker for opening files mentioned in the currently visible pane output.
+Open files and links that are already on your terminal screen.
+
+## The problem
+
+A stack trace, README, git status, or agent response mentions `src/main.py:42`.
+You select it, copy it, change directory, open your editor, paste it, and add
+`:42`. That is five or six context switches for something the terminal already
+showed you.
+
+`termscope` removes the middle steps. One key press turns the visible pane
+into a focused list of real files and links. Pick one and open it in Neovim,
+your default app, or the browser.
 
 ## What it does
 
-- Captures only the currently visible text from the source tmux pane (not scrollback history).
-- Builds an authoritative file/dir index from the pane's git root with `fd`.
-- Shows only real files/dirs that appear in the visible pane output by path, basename, or visible absolute path.
-- Opens results from the original source pane, not the popup pane.
-- If no visible files or folders are found, the picker falls back to a full repo file listing.
+- Captures the currently visible text from a tmux or Herdr pane.
+- Builds an authoritative index of files and directories from the pane's git
+  root using `fd`.
+- Shows only real paths and URLs that appear in the visible output.
+- Opens results next to the source pane, not inside the picker overlay.
+- Falls back to a full repo file listing if nothing visible matches.
 
-## Keys
+## Why it matters
 
-From the main tmux pane:
+Terminal multiplexers are great at showing context, but terrible at acting on
+it. `termscope` closes that loop: the screen becomes a menu.
 
-- `Ctrl-Shift-a` (`C-S-a`) opens the visible-screen picker directly.
-- `Ctrl-e` opens the visible-screen link picker for URLs.
+It is conservative on purpose. It does not fuzzy-search arbitrary text. It does
+not guess. It only offers files and links that are actually visible and that
+actually exist.
+
+## Install
+
+Dependencies: `tmux` or `herdr`, `fd`, `fzf`, `python3`, `nvim`, and a default
+opener (`open` on macOS, `xdg-open` on Linux, `wslview` on WSL).
+
+```sh
+git clone https://github.com/iurysza/termscope.git
+cd termscope
+```
+
+## Usage
+
+| Key | Action |
+| --- | --- |
+| `Ctrl-Shift-a` | Open visible file picker |
+| `Ctrl-e` | Open visible link picker |
 
 Inside the file picker:
 
-- `Enter` opens in a new `nvim` split.
-- `Ctrl-o` opens with the default app.
-- `Ctrl-y` annotates the selected file via Plannotator (sends `/plannotator-annotate <file>` to the source pane). If the source pane is in copy mode, it cancels copy mode first so the slash command reaches the prompt. Folders are blocked with a tmux message.
+| Key | Action |
+| --- | --- |
+| `Enter` | Open in a new Neovim split |
+| `Ctrl-o` | Open with the default app |
+| `Ctrl-y` | Annotate the file in the source pane (Plannotator integration) |
 
 Inside the link picker:
 
-- `Enter` opens the selected URL in Zen (falls back to the default app on non-macOS).
-- `Ctrl-y` copies the selected URL to the clipboard.
+| Key | Action |
+| --- | --- |
+| `Enter` | Open URL in browser |
+| `Ctrl-y` | Copy URL to clipboard |
 
-In tmux copy mode:
+In tmux copy-mode the same bindings work without canceling copy mode, so the
+scrolled viewport is preserved.
 
-- `o` opens the selected text in a new `nvim` split.
-- `O` opens the selected text with the default app.
-- `P` opens the visible-screen file picker without canceling copy mode.
-- `Ctrl-Shift-a` opens the visible-screen file picker without canceling copy mode (preserves scrolled viewport).
-- `Ctrl-e` opens the visible-screen link picker without canceling copy mode.
-
-## Script
-
-- `termscope` — single Python script with `pick`, `links`, `open`, `fallback`, and `scan` subcommands.
-- `herdr-plugin.toml` + `termscope.py` — Herdr plugin wrapper that opens the picker in an overlay pane.
-
-## Dry-run / Debug
-
-Use the `scan` subcommand to see what the picker would find without opening fzf:
-
-```sh
-/path/to/user/scripts/termscope/termscope scan --pane-path /path --pane-id %1
-```
-
-This prints JSON with capture details, candidate count, and the candidate list.
-
-Set `TERMSCOPE_DEBUG_DIR` to a directory path for per-run debug dumps:
-
-- `screen.txt` — captured pane text
-- `files.txt` — indexed repo files
-- `candidates.txt` — visible candidates
-- `fzf.json` — fzf query/key/selection
-- `decision.json` — full decision state
-
-The debug directory path is printed to stderr.
-
-## Dependencies
-
-- `tmux` or `herdr`
-- `fd`
-- `fzf`
-- `python3`
-- `nvim`
-- A default opener: macOS `open`, WSL `wslview`, or Linux `xdg-open`
-
-Override the opener with the `TERMSCOPE_OPENER` environment variable.
-
-The script auto-detects the multiplexer from the pane id shape (`%1` for tmux, `w1:p1` for Herdr). Use `--multiplexer tmux|herdr` to force a backend.
-
-## tmux config
+## tmux configuration
 
 ```tmux
-# Normal mode: open visible-screen picker
-bind-key -n C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+set -g @termscope "/path/to/termscope/termscope"
 
-# Copy-mode: open picker without canceling copy mode (preserves scrolled viewport)
-bind-key -T copy-mode-vi C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -n C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -n C-e run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 
-# Link picker
-bind-key -n C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
-bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi C-S-a run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 
-# Copy-mode bindings
-bind-key -T copy-mode-vi 'o' send -F -X copy-pipe-and-cancel "/path/to/user/scripts/termscope/termscope open --mode nvim --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
-bind-key -T copy-mode-vi 'O' send -F -X copy-pipe-and-cancel "/path/to/user/scripts/termscope/termscope open --mode default --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
-bind-key -T copy-mode-vi P run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
-bind-key -T copy-mode-vi C-e run-shell "tmux display-popup -E -w 80% -h 60% '/path/to/user/scripts/termscope/termscope links --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
+bind-key -T copy-mode-vi 'o' send -F -X copy-pipe-and-cancel "#{@termscope} open --mode nvim --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
+bind-key -T copy-mode-vi 'O' send -F -X copy-pipe-and-cancel "#{@termscope} open --mode default --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}"
+bind-key -T copy-mode-vi P run-shell "tmux display-popup -E -w 80% -h 60% '#{@termscope} pick --pane-path #{q:pane_current_path} --pane-id #{q:pane_id}'"
 ```
 
-## Herdr config
+## Herdr configuration
 
-Install the plugin from the repo root:
+Link the plugin from the repo root:
 
 ```sh
-herdr plugin link /path/to/user/scripts/termscope
+herdr plugin link /path/to/termscope
 ```
 
 Add keybindings to `~/.config/herdr/config.toml`:
@@ -118,24 +106,35 @@ command = "termscope.open-links"
 description = "visible-screen link picker"
 ```
 
-Then reload Herdr config:
+Then reload Herdr:
 
 ```sh
 herdr server reload-config
 ```
 
-The plugin opens an overlay pane, runs fzf over the visible files/links in the source pane, and dispatches the chosen action back through Herdr.
+## Dry run
+
+See what `termscope` would find without opening `fzf`:
+
+```sh
+./termscope scan --pane-path "$PWD" --pane-id "$TMUX_PANE"
+```
+
+## Configuration
+
+| Environment variable | Purpose |
+| --- | --- |
+| `TERMSCOPE_OPENER` | Override the default opener, e.g. `open -a Firefox` |
+| `TERMSCOPE_LOG` | Path to the JSON log file |
+| `TERMSCOPE_DEBUG_DIR` | Directory for per-run debug dumps |
 
 ## Tests
 
 ```sh
 python3 -m unittest discover -s tests
-python3 -m py_compile termscope termscope.py
+python3 -m py_compile termscope termscope_herdr.py
 ```
 
-## Notes
+## License
 
-- The file picker falls back to a full repo listing when no visible candidates are found; the link picker does not fall back.
-- `Shift+Enter` is intentionally not used because terminals/tmux/fzf often collapse it to plain `Enter`.
-- `Ctrl-o` is reliable and mnemonic: open with default app.
-- `Ctrl-y` sends `/plannotator-annotate <file>` into the source pane literally. Copy mode is automatically cancelled before sending so the slash command reaches Pi's prompt. Use it only when the source pane is a Pi agent session.
+MIT
