@@ -836,7 +836,7 @@ def run_fzf_visible(
 def run_fzf_links(candidates: list[str], sort: str = "appearance") -> FzfResult | None:
     return _run_fzf(
         candidates,
-        "visible links | enter=open in Zen  ctrl-y=copy  ctrl-s=toggle sort",
+        "visible links | enter=open in browser  ctrl-y=copy  ctrl-s=toggle sort",
         "enter,ctrl-y",
         sort=sort,
     )
@@ -954,11 +954,7 @@ def open_with_default_app(target: str | Path) -> NoReturn:
 
 
 def open_url(url: str) -> NoReturn:
-    """Open a URL in Zen on macOS, otherwise fall back to the default app."""
-    if sys.platform == "darwin":
-        opener = ["open", "-a", "Zen"]
-        _check_opener(opener)
-        os.execvp(opener[0], opener + [url])
+    """Open a URL with the configured/default opener."""
     open_with_default_app(url)
 
 

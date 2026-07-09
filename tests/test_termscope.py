@@ -1011,29 +1011,15 @@ class TestChooseDefaultOpener(unittest.TestCase):
 
 
 class TestOpenUrl(unittest.TestCase):
-    def test_macos_uses_safari(self):
-        with patch.object(tfp.sys, "platform", "darwin"), \
-             patch.object(tfp.os, "execvp") as mock_exec:
-            # os.execvp replaces the process and never returns; simulate that.
-            mock_exec.side_effect = SystemExit(0)
-            with self.assertRaises(SystemExit):
-                tfp.open_url("https://example.com")
-
-        mock_exec.assert_called_once_with(
-            "open",
-            ["open", "-a", "Zen", "https://example.com"],
-        )
-
-    def test_non_macos_falls_back_to_default_app(self):
-        with patch.object(tfp.sys, "platform", "linux"), \
-             patch.object(tfp, "open_with_default_app") as mock_default:
+    def test_uses_default_app(self):
+        with patch.object(tfp, "open_with_default_app") as mock_default:
             tfp.open_url("https://example.com")
 
         mock_default.assert_called_once_with("https://example.com")
 
 
 class TestLinkPickerHeader(unittest.TestCase):
-    def test_links_header_mentions_safari(self):
+    def test_links_header_mentions_browser(self):
         completed = SimpleNamespace(returncode=1, stdout="query\nenter\nhttps://example.com")
         with patch.object(tfp.subprocess, "run", return_value=completed) as run:
             result = tfp.run_fzf_links(["https://example.com"])
@@ -1042,7 +1028,7 @@ class TestLinkPickerHeader(unittest.TestCase):
         self.assertEqual(result.key, "enter")
         cmd = run.call_args.args[0]
         header_idx = cmd.index("--header")
-        self.assertIn("Zen", cmd[header_idx + 1])
+        self.assertIn("browser", cmd[header_idx + 1])
 
 
 class TestBackendDetection(unittest.TestCase):
@@ -1061,9 +1047,12 @@ class TestBackendDetection(unittest.TestCase):
 class TestHerdrBackend(unittest.TestCase):
     def test_resolve_source_pane_path_parses_cwd(self):
         backend = tfp.HerdrBackend()
+        tmp = Path(__file__).parent / "_test_herdr_cwd"
+        tmp.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
         pane_json = json.dumps({
             "result": {
-                "pane": {"cwd": "/tmp/repo", "pane_id": "w1:p1"}
+                "pane": {"cwd": str(tmp), "pane_id": "w1:p1"}
             }
         })
 
@@ -1071,7 +1060,7 @@ class TestHerdrBackend(unittest.TestCase):
              patch.object(backend, "_herdr_bin", return_value="herdr"):
             result = backend.resolve_source_pane_path(Path("/fallback"), "w1:p1")
 
-        self.assertEqual(result, Path("/tmp/repo"))
+        self.assertEqual(result, tmp)
         cmd = run.call_args.args[0]
         self.assertEqual(cmd[:3], ["herdr", "pane", "get"])
         self.assertEqual(cmd[3], "w1:p1")

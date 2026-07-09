@@ -1,30 +1,44 @@
+# herdr-plugin.toml — manifest for Termscope.
+#
+# Install from GitHub:
+#   herdr plugin install iurysza/termscope
+#
+# Local development:
+#   herdr plugin link /path/to/termscope
+#
+# Termscope opens real files and URLs already visible in the active pane. The
+# user-facing action opens a Herdr overlay pane because actions run without a
+# TTY and fzf needs one.
+
 id = "termscope"
 name = "Termscope"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "Open files and links that are already on screen."
-platforms = ["linux", "macos", "windows"]
+description = "Open files and links already visible on your terminal screen."
+platforms = ["linux", "macos"]
 
 [[actions]]
 id = "open"
-title = "Open visible file picker"
+title = "Termscope: open visible file picker"
+description = "Scan the focused pane for visible file paths and open a picker overlay."
 contexts = ["workspace"]
 command = ["python3", "termscope_herdr.py", "--open-pane"]
 
 [[actions]]
 id = "open-links"
-title = "Open visible link picker"
+title = "Termscope: open visible link picker"
+description = "Scan the focused pane for visible URLs and open a picker overlay."
 contexts = ["workspace"]
 command = ["python3", "termscope_herdr.py", "--open-links-pane"]
 
 [[panes]]
 id = "picker"
-title = "File Picker"
+title = "Termscope"
 placement = "overlay"
 command = ["python3", "termscope_herdr.py"]
 
 [[panes]]
 id = "link-picker"
-title = "Link Picker"
+title = "Termscope Links"
 placement = "overlay"
 command = ["python3", "termscope_herdr.py", "--links"]
