@@ -9,17 +9,21 @@
 
 Open the files and links your agent just mentioned.
 
-`termscope` turns terminal output into a jump list. It reads the visible pane,
-finds real files and URLs, then opens the selected target beside the conversation
-you were already reading.
+`termscope` turns terminal output into a jump list. It reads the active pane's
+visible terminal viewport, finds real files and URLs, then opens the selected
+target beside the conversation you were already reading.
 
 ```text
-agent output / stack trace / git status
+visible terminal viewport
         │
         ▼
 Ctrl-Shift-A  →  pick a visible file  →  nvim opens src/main.py:42
 Ctrl-E        →  pick a visible link  →  browser opens it
 ```
+
+## Demo
+
+https://github.com/user-attachments/assets/f57e00f0-e7eb-4824-9e6e-78a90fc58e1a
 
 ## Why
 
