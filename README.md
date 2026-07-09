@@ -191,14 +191,6 @@ herdr plugin action invoke termscope.open
 The repo intentionally has no package manager or build step. Herdr installs it
 by cloning the repo and reading `herdr-plugin.toml`.
 
-## Publishing notes
-
-To appear in the Herdr marketplace, the GitHub repo must be public and include
-the `herdr-plugin` topic. Recommended repo metadata:
-
-- description: `Open files and links already visible on your terminal screen.`
-- topics: `herdr-plugin`, `herdr`, `fzf`, `tmux`, `terminal`, `python`
-
 ## License
 
 [MIT](LICENSE) © iury souza
