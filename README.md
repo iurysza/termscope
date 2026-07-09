@@ -5,34 +5,35 @@
 ![herdr 0.7+](https://img.shields.io/badge/herdr-0.7%2B-8a2be2)
 ![platforms: macOS • Linux](https://img.shields.io/badge/platforms-macOS%20%E2%80%A2%20Linux-informational)
 
-Open files and links that are already visible in your terminal.
+Open the files and links your agent just mentioned.
 
-`termscope` turns the current pane into a menu: it reads the visible text, finds
-real paths and URLs, shows them in `fzf`, then opens the selected target next to
-the pane you were looking at.
+`termscope` turns terminal output into a jump list. It reads the visible pane,
+finds real files and URLs, then opens the selected target beside the conversation
+you were already reading.
 
 ```text
 agent output / stack trace / git status
         │
         ▼
-Ctrl-Shift-A  →  fzf picker  →  nvim split at src/main.py:42
-Ctrl-E        →  fzf picker  →  browser opens visible URL
+Ctrl-Shift-A  →  pick a visible file  →  nvim opens src/main.py:42
+Ctrl-E        →  pick a visible link  →  browser opens it
 ```
 
 ## Why
 
-A stack trace says `src/server/main.py:42`. A README mentions
-`docs/install.md`. An agent suggests `tests/test_api.py`. The terminal already
-knows the target; your hands should not have to select, copy, cd, paste, and add
-the line number.
+Agents constantly mention files: stack traces, changed tests, docs, configs,
+links, PRs. `termscope` lets you keep up without doing the little dance:
+select text, copy, cd, paste, fix the path, add the line number.
 
-Termscope is intentionally conservative:
+If it's visible in the pane and exists in the repo, you can jump to it.
 
-- scans only what is visible in the active pane
-- checks paths against the repo/worktree on disk
+Termscope stays conservative:
+
+- scans only the active pane's visible text
+- verifies paths against the repo/worktree on disk
 - preserves `file:line` targets
-- falls back to a full repo file picker when nothing visible matches
-- opens results outside the picker overlay, so the original pane stays intact
+- falls back to a full repo picker when no visible file matches
+- opens outside the picker overlay, so the agent conversation stays where it is
 
 ## Requirements
 
