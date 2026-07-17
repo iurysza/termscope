@@ -7,38 +7,46 @@
 #   herdr plugin link /path/to/termscope
 #
 # Termscope opens real files and URLs already visible in the active pane. The
-# user-facing action opens a Herdr overlay pane because actions run without a
-# TTY and fzf needs one.
+# action opens a bounded Herdr popup because plugin actions run without a TTY
+# and Television needs an interactive terminal.
 
 id = "termscope"
 name = "Termscope"
-version = "0.1.0"
-min_herdr_version = "0.7.0"
+version = "0.2.0"
+min_herdr_version = "0.7.4"
 description = "Open files and links already visible on your terminal screen."
 platforms = ["linux", "macos"]
+
+[[build]]
+platforms = ["linux", "macos"]
+command = ["sh", "scripts/install-dependencies.sh"]
 
 [[actions]]
 id = "open"
 title = "Termscope: open visible file picker"
-description = "Scan the focused pane for visible file paths and open a picker overlay."
+description = "Scan the focused pane for visible file paths and open a Television popup."
 contexts = ["workspace"]
 command = ["python3", "termscope_herdr.py", "--open-pane"]
 
 [[actions]]
 id = "open-links"
 title = "Termscope: open visible link picker"
-description = "Scan the focused pane for visible URLs and open a picker overlay."
+description = "Scan the focused pane for visible URLs and open a Television popup."
 contexts = ["workspace"]
 command = ["python3", "termscope_herdr.py", "--open-links-pane"]
 
 [[panes]]
 id = "picker"
 title = "Termscope"
-placement = "overlay"
+placement = "popup"
+width = "80%"
+height = "60%"
 command = ["python3", "termscope_herdr.py"]
 
 [[panes]]
 id = "link-picker"
 title = "Termscope Links"
-placement = "overlay"
+placement = "popup"
+width = "80%"
+height = "60%"
 command = ["python3", "termscope_herdr.py", "--links"]

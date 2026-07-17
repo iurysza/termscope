@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.0 - Unreleased
+
+### Added
+
+- Television channels with file previews, always-visible action hints, and `Ctrl-S` appearance/alphabetical source cycling.
+- Built-in text and directory previews when `bat` is unavailable.
+- Install-time Television provisioning through Homebrew for Herdr plugin installs.
+
+### Changed
+
+- Replaced fzf with Television `0.15+`.
+- Replaced full-pane Herdr overlays with bounded `80% × 60%` session-modal popups.
+- Raised the minimum Herdr version to `0.7.4`.
+
+### Fixed
+
+- Encoded picker targets before Television preview interpolation so filenames cannot inject shell syntax.
+- Propagated Herdr popup and Television runtime failures while keeping user cancellation successful.
+- Used the Plannotator slash command in agent panes and the CLI command in plain shells.
+- Bounded preview reads by size, output, and wall-clock time.
+
 ## 0.1.0 - 2026-07-09
 
 ### Added

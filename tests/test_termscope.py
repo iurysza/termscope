@@ -294,41 +294,43 @@ class TestExtractVisibleCandidates(unittest.TestCase):
         self.assertEqual(cands, ["src/utils.py", "src/main.py", "README.md"])
 
 
-class TestParseFzfResult(unittest.TestCase):
-    def test_query_key_selection(self):
-        r = tfp.parse_fzf_result("query\nenter\nselection")
-        self.assertEqual(r.query, "query")
-        self.assertEqual(r.key, "enter")
-        self.assertEqual(r.selection, "selection")
+class TestParseTvResult(unittest.TestCase):
+    def test_enter_outputs_selection_only(self):
+        result = tfp.parse_tv_result("src/main.py\n", ("ctrl-o", "ctrl-y"))
+        self.assertEqual(result.key, "")
+        self.assertEqual(result.selection, "src/main.py")
 
-    def test_query_blank_key_selection(self):
-        r = tfp.parse_fzf_result("query\n\nselection")
-        self.assertEqual(r.query, "query")
-        self.assertEqual(r.key, "")
-        self.assertEqual(r.selection, "selection")
+    def test_expect_key_precedes_selection(self):
+        result = tfp.parse_tv_result("ctrl-y\nsrc/main.py\n", ("ctrl-o", "ctrl-y"))
+        self.assertEqual(result.key, "ctrl-y")
+        self.assertEqual(result.selection, "src/main.py")
 
-    def test_query_only(self):
-        r = tfp.parse_fzf_result("query")
-        self.assertEqual(r.query, "query")
-        self.assertEqual(r.key, "")
-        self.assertEqual(r.selection, "")
+    def test_empty_output_is_cancel(self):
+        self.assertEqual(tfp.parse_tv_result("", ("ctrl-y",)), tfp.PickerResult())
 
-    def test_ctrl_o(self):
-        r = tfp.parse_fzf_result("query\nctrl-o\nselection")
-        self.assertEqual(r.key, "ctrl-o")
+    def test_non_expect_first_line_remains_part_of_selection(self):
+        result = tfp.parse_tv_result("first\nsecond\n", ("ctrl-y",))
+        self.assertEqual(result.key, "")
+        self.assertEqual(result.selection, "first\nsecond")
 
-    def test_ctrl_y(self):
-        r = tfp.parse_fzf_result("query\nctrl-y\nselection")
-        self.assertEqual(r.query, "query")
-        self.assertEqual(r.key, "ctrl-y")
-        self.assertEqual(r.selection, "selection")
 
-    def test_query_selection_no_expect(self):
-        # First rest is not a known key, treat as selection
-        r = tfp.parse_fzf_result("query\nselection")
-        self.assertEqual(r.query, "query")
-        self.assertEqual(r.key, "")
-        self.assertEqual(r.selection, "selection")
+class TestCandidateEncoding(unittest.TestCase):
+    def test_round_trips_shell_metacharacters(self):
+        candidates = [
+            "path with spaces.py:12",
+            "semi;colon.py",
+            "$(touch nope).py",
+            "single'quote.py",
+            'double"quote.py',
+        ]
+        for candidate in candidates:
+            encoded = tfp.encode_candidate(candidate)
+            self.assertRegex(encoded, r"^[A-Za-z0-9_-]+$")
+            self.assertEqual(tfp.decode_candidate(encoded), candidate)
+
+    def test_rejects_invalid_candidate_id(self):
+        with self.assertRaisesRegex(ValueError, "invalid Television candidate id"):
+            tfp.decode_candidate("!")
 
 
 class TestCapturePaneVisibleOnly(unittest.TestCase):
@@ -489,8 +491,8 @@ class TestNoCandidates(unittest.TestCase):
              patch.object(tfp, "strip_ansi", side_effect=lambda x: x), \
              patch.object(tfp, "list_repo_files", return_value=[]), \
              patch.object(tfp, "extract_visible_candidates", return_value=[]), \
-             patch.object(tfp, "run_fzf_visible") as mock_fzf, \
-             patch.object(tfp, "run_fzf_full_repo", return_value=None) as mock_full, \
+             patch.object(tfp, "run_tv_visible") as mock_picker, \
+             patch.object(tfp, "run_tv_full_repo", return_value=None) as mock_full, \
              patch.object(tfp.subprocess, "run") as mock_run, \
              patch("os.execvp"):
 
@@ -499,8 +501,8 @@ class TestNoCandidates(unittest.TestCase):
 
             tfp.cmd_pick(args)
 
-        # run_fzf_visible should NOT be called when candidates are empty
-        mock_fzf.assert_not_called()
+        # The visible-only picker is skipped when no visible candidate exists.
+        mock_picker.assert_not_called()
         # Should fall back to full-repo listing
         mock_full.assert_called_once()
 
@@ -517,8 +519,8 @@ class TestNoCandidates(unittest.TestCase):
         )
 
 
-class TestQueryOnlyNoOpen(unittest.TestCase):
-    def test_typed_query_without_selection_does_not_open(self):
+class TestCancelledPickerNoOpen(unittest.TestCase):
+    def test_empty_selection_does_not_open(self):
         args = SimpleNamespace(
             pane_path="/tmp/repo",
             pane_id="%1",
@@ -528,7 +530,7 @@ class TestQueryOnlyNoOpen(unittest.TestCase):
              patch.object(tfp, "strip_ansi", side_effect=lambda x: x), \
              patch.object(tfp, "list_repo_files", return_value=["src/main.py"]), \
              patch.object(tfp, "extract_visible_candidates", return_value=["src/main.py"]), \
-             patch.object(tfp, "run_fzf_visible", return_value=tfp.FzfResult(query="README.md", key="enter", selection="")), \
+             patch.object(tfp, "run_tv_visible", return_value=tfp.PickerResult(selection="")), \
              patch.object(tfp, "_open_target") as mock_open, \
              patch.object(tfp.subprocess, "run") as mock_run:
 
@@ -758,108 +760,333 @@ class TestSortEnvVar(unittest.TestCase):
         self.assertEqual(cands, ["README.md", "src/main.py", "src/utils.py"])
 
 
-class TestReorderCommand(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(__file__).parent / "_test_reorder"
-        self.tmp.mkdir(exist_ok=True)
-        self.cand = self.tmp / "candidates.txt"
-        self.state = self.tmp / "state.txt"
+class TestTelevisionCommands(unittest.TestCase):
+    def test_home_path_is_shortened_for_picker_header(self):
+        self.assertEqual(tfp.display_path(Path.home() / "projects"), "~/projects")
 
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmp, ignore_errors=True)
+    def test_empty_candidates_skip_television(self):
+        with patch.object(tfp.subprocess, "run") as run:
+            self.assertIsNone(tfp._run_tv([], "Empty", (), cwd=Path("/tmp")))
+        run.assert_not_called()
 
-    def test_toggles_appearance_to_alpha(self):
-        self.cand.write_text("z\na\nm\n")
-        self.state.write_text("appearance")
-        args = SimpleNamespace(candidates_file=str(self.cand), state_file=str(self.state))
-        import io
-        buf = io.StringIO()
-        with patch("sys.stdout", buf):
-            tfp.cmd_reorder(args)
-        self.assertEqual(self.state.read_text(), "alpha")
-        self.assertEqual(buf.getvalue(), "a\nm\nz\n")
+    def test_visible_picker_uses_channels_expect_keys_and_both_orders(self):
+        captured = {}
 
-    def test_toggles_alpha_to_appearance(self):
-        self.cand.write_text("z\na\nm\n")
-        self.state.write_text("alpha")
-        args = SimpleNamespace(candidates_file=str(self.cand), state_file=str(self.state))
-        import io
-        buf = io.StringIO()
-        with patch("sys.stdout", buf):
-            tfp.cmd_reorder(args)
-        self.assertEqual(self.state.read_text(), "appearance")
-        self.assertEqual(buf.getvalue(), "z\na\nm\n")
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["appearance"] = Path(
+                kwargs["env"]["TERMSCOPE_APPEARANCE_CANDIDATES"]
+            ).read_text()
+            captured["alpha"] = Path(
+                kwargs["env"]["TERMSCOPE_ALPHA_CANDIDATES"]
+            ).read_text()
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"ctrl-y\n{tfp.encode_candidate('a.py')}\n",
+            )
 
+        with patch.object(tfp.shutil, "which", return_value="/opt/homebrew/bin/tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=True), \
+             patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            result = tfp.run_tv_visible(
+                ["z.py", "a.py", "m.py"], Path("/tmp"), sort="appearance"
+            )
 
-class TestFzfCommands(unittest.TestCase):
-    def test_visible_picker_not_called_when_empty_candidates(self):
-        # After refactoring, empty candidates means no fzf call
-        with patch.object(tfp.subprocess, "run") as mock_run:
-            # If the implementation does call fzf, it should not happen for empty
-            # This test documents that empty candidates => no fzf
-            pass  # Covered by TestNoCandidates
+        self.assertEqual(result, tfp.PickerResult(key="ctrl-y", selection="a.py"))
+        appearance = [line.split("\t", 1)[1] for line in captured["appearance"].splitlines()]
+        alpha = [line.split("\t", 1)[1] for line in captured["alpha"].splitlines()]
+        self.assertEqual(appearance, ["z.py", "a.py", "m.py"])
+        self.assertEqual(alpha, ["a.py", "m.py", "z.py"])
+        for line in captured["appearance"].splitlines():
+            encoded, _ = line.split("\t", 1)
+            self.assertRegex(encoded, r"^[A-Za-z0-9_-]+$")
+        command = captured["command"]
+        self.assertEqual(command[0], "/opt/homebrew/bin/tv")
+        self.assertIn("termscope-appearance", command)
+        expect_index = command.index("--expect")
+        self.assertEqual(command[expect_index + 1], "ctrl-o;ctrl-y")
+        header_index = command.index("--input-header")
+        self.assertEqual(command[header_index + 1], "Files — /tmp")
+        self.assertNotIn("--no-preview", command)
 
-    def test_fallback_picker_feeds_fd_results_to_fzf(self):
-        completed = SimpleNamespace(returncode=0, stdout="src/main.py\n")
-        with patch.object(tfp, "list_repo_files", return_value=["src/main.py", "README.md"]), \
-             patch.object(tfp.subprocess, "run", return_value=completed) as run:
-            selected = tfp.run_fallback_picker(Path("/tmp/repo"), "main")
+    def test_alpha_preference_selects_alpha_first_channel(self):
+        with patch.object(tfp.shutil, "which", return_value="tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=True), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(
+                     returncode=0,
+                     stdout=f"{tfp.encode_candidate('a.py')}\n",
+                 ),
+             ) as run:
+            tfp.run_tv_visible(["z.py", "a.py"], Path("/tmp"), sort="alpha")
 
-        self.assertEqual(selected, "src/main.py")
-        self.assertEqual(run.call_args.kwargs["input"], "src/main.py\nREADME.md\n")
-        self.assertEqual(run.call_args.kwargs["stdout"], tfp.subprocess.PIPE)
-        self.assertNotIn("capture_output", run.call_args.kwargs)
+        self.assertIn("termscope-alpha", run.call_args.args[0])
 
-    def test_fallback_picker_alpha_sorts_input(self):
-        completed = SimpleNamespace(returncode=0, stdout="src/main.py\n")
-        with patch.object(tfp, "list_repo_files", return_value=["src/main.py", "README.md", "app.py"]), \
-             patch.object(tfp.subprocess, "run", return_value=completed) as run:
-            tfp.run_fallback_picker(Path("/tmp/repo"), "", sort="alpha")
+    def test_link_picker_disables_preview(self):
+        with patch.object(tfp.shutil, "which", return_value="tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=True), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(
+                     returncode=0,
+                     stdout=f"{tfp.encode_candidate('https://example.com')}\n",
+                 ),
+             ) as run:
+            result = tfp.run_tv_links(["https://example.com"], Path("/tmp"))
 
-        self.assertEqual(run.call_args.kwargs["input"], "app.py\nREADME.md\nsrc/main.py\n")
+        self.assertEqual(result.selection, "https://example.com")
+        command = run.call_args.args[0]
+        self.assertIn("--no-preview", command)
+        expect_index = command.index("--expect")
+        self.assertEqual(command[expect_index + 1], "ctrl-y")
 
-    def test_fallback_picker_includes_sort_toggle_bind(self):
-        completed = SimpleNamespace(returncode=0, stdout="src/main.py\n")
+    def test_full_repo_uses_repo_files(self):
         with patch.object(tfp, "list_repo_files", return_value=["src/main.py"]), \
-             patch.object(tfp.subprocess, "run", return_value=completed) as run:
-            tfp.run_fallback_picker(Path("/tmp/repo"), "")
+             patch.object(tfp, "_run_tv", return_value=tfp.PickerResult(selection="src/main.py")) as run:
+            result = tfp.run_tv_full_repo(Path("/tmp/repo"), sort="alpha")
 
-        cmd = run.call_args.args[0]
-        bind_idx = cmd.index("--bind")
-        self.assertIn("ctrl-s:reload", cmd[bind_idx + 1])
-        self.assertIn("reorder", cmd[bind_idx + 1])
+        self.assertEqual(result.selection, "src/main.py")
+        self.assertEqual(run.call_args.args[0], ["src/main.py"])
+        self.assertEqual(run.call_args.kwargs["sort"], "alpha")
 
-    def test_fzf_visible_includes_ctrl_y(self):
-        completed = SimpleNamespace(returncode=1, stdout="query\nctrl-y\nselection")
-        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
-            result = tfp.run_fzf_visible(["src/main.py"], Path("/tmp/repo"))
+    def test_missing_television_exits_nonzero(self):
+        import io
+        with patch.object(tfp.shutil, "which", return_value=None), \
+             patch.object(tfp, "_picker_error") as error, \
+             patch("sys.stderr", io.StringIO()), \
+             self.assertRaises(SystemExit) as raised:
+            tfp.run_tv_visible(["src/main.py"], Path("/tmp"))
+        self.assertEqual(raised.exception.code, 1)
+        error.assert_called_once_with("television (tv) not found")
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result.key, "ctrl-y")
-        cmd = run.call_args.args[0]
-        # Should be in --expect value
-        expect_idx = cmd.index("--expect")
-        self.assertIn("ctrl-y", cmd[expect_idx + 1])
-        header_idx = cmd.index("--header")
-        self.assertIn("annotate", cmd[header_idx + 1].lower())
+    def test_zero_status_empty_output_is_cancel(self):
+        with patch.object(tfp.shutil, "which", return_value="tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=True), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(returncode=0, stdout=""),
+             ):
+            result = tfp.run_tv_visible(["src/main.py"], Path("/tmp"))
+        self.assertEqual(result, tfp.PickerResult())
 
-    def test_fzf_visible_alpha_sorts_input(self):
-        completed = SimpleNamespace(returncode=1, stdout="query\nenter\nselection")
-        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
-            tfp.run_fzf_visible(["z.py", "a.py", "m.py"], Path("/tmp/repo"), sort="alpha")
+    def test_key_without_selection_is_malformed(self):
+        with patch.object(tfp.shutil, "which", return_value="tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=True), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(returncode=0, stdout="ctrl-y\n"),
+             ), \
+             patch.object(tfp, "_picker_error") as error, \
+             self.assertRaises(SystemExit) as raised:
+            tfp.run_tv_visible(["src/main.py"], Path("/tmp"))
+        self.assertEqual(raised.exception.code, 1)
+        error.assert_called_once_with("Television returned an invalid selection")
 
-        self.assertEqual(run.call_args.kwargs["input"], "a.py\nm.py\nz.py\n")
+    def test_selection_must_have_been_offered(self):
+        with patch.object(tfp.shutil, "which", return_value="tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=True), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(
+                     returncode=0,
+                     stdout=f"{tfp.encode_candidate('other.py')}\n",
+                 ),
+             ), \
+             patch.object(tfp, "_picker_error") as error, \
+             self.assertRaises(SystemExit) as raised:
+            tfp.run_tv_visible(["src/main.py"], Path("/tmp"))
+        self.assertEqual(raised.exception.code, 1)
+        error.assert_called_once_with("Television returned an unknown selection")
 
-    def test_fzf_visible_includes_sort_toggle_bind(self):
-        completed = SimpleNamespace(returncode=1, stdout="query\nenter\nselection")
-        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
-            tfp.run_fzf_visible(["src/main.py"], Path("/tmp/repo"))
+    def test_nonzero_television_status_reports_failure(self):
+        with patch.object(tfp.shutil, "which", return_value="tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=True), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(returncode=1, stdout=""),
+             ), \
+             patch.object(tfp, "_picker_error") as error, \
+             self.assertRaises(SystemExit) as raised:
+            tfp.run_tv_visible(["src/main.py"], Path("/tmp"))
+        self.assertEqual(raised.exception.code, 1)
+        error.assert_called_once_with("Television failed with status 1")
 
-        cmd = run.call_args.args[0]
-        bind_idx = cmd.index("--bind")
-        self.assertIn("ctrl-s:reload", cmd[bind_idx + 1])
-        self.assertIn("reorder", cmd[bind_idx + 1])
+    def test_rejects_old_television(self):
+        with patch.object(tfp.shutil, "which", return_value="tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=False), \
+             patch.object(tfp, "_picker_error") as error, \
+             self.assertRaises(SystemExit) as raised:
+            tfp.run_tv_visible(["src/main.py"], Path("/tmp"))
+        self.assertEqual(raised.exception.code, 1)
+        error.assert_called_once_with("Television 0.15+ is required")
+
+    def test_version_preflight_accepts_015(self):
+        completed = SimpleNamespace(returncode=0, stdout="television 0.15.9\n")
+        with patch.object(tfp.subprocess, "run", return_value=completed):
+            self.assertTrue(tfp._television_is_supported("tv"))
+
+    def test_version_preflight_rejects_071(self):
+        completed = SimpleNamespace(returncode=0, stdout="television 0.7.1\n")
+        with patch.object(tfp.subprocess, "run", return_value=completed):
+            self.assertFalse(tfp._television_is_supported("tv"))
+
+    def test_version_preflight_rejects_nonzero_status(self):
+        completed = SimpleNamespace(returncode=1, stdout="television 0.15.9\n")
+        with patch.object(tfp.subprocess, "run", return_value=completed):
+            self.assertFalse(tfp._television_is_supported("tv"))
+
+    def test_version_preflight_times_out(self):
+        with patch.object(
+            tfp.subprocess,
+            "run",
+            side_effect=tfp.subprocess.TimeoutExpired("tv", 2),
+        ):
+            self.assertFalse(tfp._television_is_supported("tv"))
+
+
+class TestPreviewTarget(unittest.TestCase):
+    def test_whole_preview_timeout_is_reported(self):
+        import io
+        output = io.StringIO()
+        with patch.object(tfp, "_render_preview", side_effect=TimeoutError), \
+             patch("sys.stdout", output):
+            tfp.preview_target("main.py", Path("/tmp"))
+        self.assertEqual(output.getvalue().strip(), "termscope: preview timed out")
+
+    def test_file_line_uses_bat_range_and_highlight(self):
+        root = Path(__file__).parent / "_test_preview"
+        root.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        target = root / "main.py"
+        target.write_text("\n".join(f"line {index}" for index in range(1, 80)))
+
+        with patch.object(tfp, "find_search_root", return_value=root), \
+             patch.object(tfp.shutil, "which", return_value="bat"), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(returncode=0, stdout=""),
+             ) as run:
+            tfp.preview_target("main.py:42", root)
+
+        command = run.call_args.args[0]
+        self.assertIn("--line-range", command)
+        self.assertIn("27:77", command)
+        self.assertIn("--highlight-line", command)
+        self.assertIn("42", command)
+
+    def test_file_without_line_uses_bounded_bat_range(self):
+        root = Path(__file__).parent / "_test_preview_bounded_bat"
+        root.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        (root / "main.py").write_text("one\ntwo\n")
+
+        with patch.object(tfp, "find_search_root", return_value=root), \
+             patch.object(tfp.shutil, "which", return_value="bat"), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(returncode=0, stdout=""),
+             ) as run:
+            tfp.preview_target("main.py", root)
+
+        command = run.call_args.args[0]
+        self.assertIn("--line-range", command)
+        self.assertIn("1:200", command)
+
+    def test_failed_bat_falls_back_to_python_preview(self):
+        import io
+        root = Path(__file__).parent / "_test_preview_bat_failure"
+        root.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        (root / "main.py").write_text("one\ntwo\nthree\n")
+        output = io.StringIO()
+
+        with patch.object(tfp, "find_search_root", return_value=root), \
+             patch.object(tfp.shutil, "which", return_value="bat"), \
+             patch.object(
+                 tfp.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(returncode=1, stdout="", stderr="bad cache"),
+             ), \
+             patch("sys.stdout", output):
+            tfp.preview_target("main.py:2", root)
+
+        self.assertIn(">     2 │ two", output.getvalue())
+
+    def test_python_preview_marks_requested_line_without_bat(self):
+        import io
+        root = Path(__file__).parent / "_test_preview_fallback"
+        root.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        (root / "main.py").write_text("one\ntwo\nthree\n")
+        output = io.StringIO()
+
+        with patch.object(tfp, "find_search_root", return_value=root), \
+             patch.object(tfp.shutil, "which", return_value=None), \
+             patch("sys.stdout", output):
+            tfp.preview_target("main.py:2", root)
+
+        self.assertIn(">     2 │ two", output.getvalue())
+
+    def test_python_preview_bounds_a_single_large_line(self):
+        import io
+        root = Path(__file__).parent / "_test_preview_large_line"
+        root.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        (root / "large.txt").write_text("x" * 1_100_000)
+        output = io.StringIO()
+
+        with patch.object(tfp, "find_search_root", return_value=root), \
+             patch.object(tfp.shutil, "which", return_value="bat"), \
+             patch.object(tfp.subprocess, "run") as run, \
+             patch("sys.stdout", output):
+            tfp.preview_target("large.txt", root)
+
+        run.assert_not_called()
+        rendered = output.getvalue()
+        self.assertLess(len(rendered), 1_100)
+        self.assertTrue(rendered.rstrip().endswith("…"))
+
+    def test_directory_preview_lists_directories_first(self):
+        import io
+        root = Path(__file__).parent / "_test_preview_dir"
+        root.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        (root / "z.txt").write_text("z")
+        (root / "folder").mkdir()
+        output = io.StringIO()
+
+        with patch.object(tfp, "find_search_root", return_value=root), \
+             patch("sys.stdout", output):
+            tfp.preview_target(".", root)
+
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[1].strip(), "folder/")
+
+    def test_external_file_preview_is_rendered(self):
+        import io
+        base = Path(__file__).parent / "_test_preview_external"
+        root = base / "repo"
+        root.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(base, ignore_errors=True))
+        outside = base / "external.txt"
+        outside.write_text("outside workspace")
+        output = io.StringIO()
+
+        with patch.object(tfp, "find_search_root", return_value=root), \
+             patch.object(tfp.shutil, "which", return_value=None), \
+             patch("sys.stdout", output):
+            tfp.preview_target(str(outside), root)
+
+        self.assertIn("outside workspace", output.getvalue())
 
 
 class TestSendAnnotateCommand(unittest.TestCase):
@@ -954,6 +1181,22 @@ class TestSendAnnotateCommand(unittest.TestCase):
         ]
         self.assertEqual(len(display_calls), 1, "should show Plannotator message")
 
+    def test_plain_shell_runs_plannotator_cli(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "tmux" and cmd[1] == "display-message":
+                return SimpleNamespace(returncode=0, stdout="0\tzsh\n")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            tfp.send_annotate_command("%1", "/tmp/repo/src/main.py")
+
+        literal_call = next(c for c in calls if c[:2] == ["tmux", "send-keys"] and "-l" in c)
+        command = literal_call[literal_call.index("-l") + 1]
+        self.assertEqual(command, "plannotator annotate /tmp/repo/src/main.py")
+
     def test_path_with_spaces_is_quoted(self):
         """Paths containing spaces are shell-quoted with shlex.quote."""
         calls = []
@@ -1019,16 +1262,12 @@ class TestOpenUrl(unittest.TestCase):
 
 
 class TestLinkPickerHeader(unittest.TestCase):
-    def test_links_header_mentions_browser(self):
-        completed = SimpleNamespace(returncode=1, stdout="query\nenter\nhttps://example.com")
-        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
-            result = tfp.run_fzf_links(["https://example.com"])
+    def test_links_header_mentions_visible_links(self):
+        with patch.object(tfp, "_run_tv", return_value=tfp.PickerResult()) as run:
+            tfp.run_tv_links(["https://example.com"], Path("/tmp"))
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result.key, "enter")
-        cmd = run.call_args.args[0]
-        header_idx = cmd.index("--header")
-        self.assertIn("browser", cmd[header_idx + 1])
+        self.assertIn("Visible links", run.call_args.args[1])
+        self.assertFalse(run.call_args.kwargs["preview"])
 
 
 class TestBackendDetection(unittest.TestCase):
@@ -1037,8 +1276,11 @@ class TestBackendDetection(unittest.TestCase):
         self.assertIsInstance(tfp.detect_backend("%42"), tfp.TmuxBackend)
 
     def test_herdr_pane_id(self):
+        self.assertIsInstance(tfp.detect_backend("1-1"), tfp.HerdrBackend)
+        self.assertIsInstance(tfp.detect_backend("12-3"), tfp.HerdrBackend)
         self.assertIsInstance(tfp.detect_backend("w1:p1"), tfp.HerdrBackend)
         self.assertIsInstance(tfp.detect_backend("w12:pT"), tfp.HerdrBackend)
+        self.assertIsInstance(tfp.detect_backend("w1H:pS"), tfp.HerdrBackend)
 
     def test_empty_defaults_to_tmux(self):
         self.assertIsInstance(tfp.detect_backend(""), tfp.TmuxBackend)
@@ -1081,9 +1323,10 @@ class TestHerdrBackend(unittest.TestCase):
         cmd = run.call_args.args[0]
         self.assertEqual(cmd, ["herdr", "pane", "read", "w1:p1", "--source", "visible"])
 
-    def test_send_annotate_command_runs_slash_command(self):
+    def test_send_annotate_command_runs_slash_command_for_agent(self):
         backend = tfp.HerdrBackend()
-        with patch.object(tfp.subprocess, "run") as run, \
+        with patch.dict(os.environ, {"SOURCE_PANE_AGENT": "pi"}), \
+             patch.object(tfp.subprocess, "run") as run, \
              patch.object(backend, "_herdr_bin", return_value="herdr"):
             backend.send_annotate_command("w1:p1", "/tmp/repo/src/main.py")
 
@@ -1094,6 +1337,17 @@ class TestHerdrBackend(unittest.TestCase):
         self.assertIn("/tmp/repo/src/main.py", calls[0].args[0][4])
 
         self.assertEqual(calls[1].args[0][:3], ["herdr", "notification", "show"])
+
+    def test_send_annotate_command_runs_cli_for_shell(self):
+        backend = tfp.HerdrBackend()
+        with patch.dict(os.environ, {"SOURCE_PANE_AGENT": ""}), \
+             patch.object(tfp.subprocess, "run") as run, \
+             patch.object(backend, "_herdr_bin", return_value="herdr"):
+            backend.send_annotate_command("w1:p1", "/tmp/repo/src/main.py")
+
+        command = run.call_args_list[0].args[0]
+        self.assertEqual(command[:4], ["herdr", "pane", "run", "w1:p1"])
+        self.assertEqual(command[4], "plannotator annotate /tmp/repo/src/main.py")
 
     def test_open_in_nvim_split_splits_then_runs(self):
         backend = tfp.HerdrBackend()

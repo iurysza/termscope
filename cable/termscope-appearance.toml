@@ -1,0 +1,31 @@
+[metadata]
+name = "termscope-appearance"
+description = "Pick visible terminal targets in appearance order"
+
+[source]
+command = [
+  { name = "Appearance", run = "cat \"$TERMSCOPE_APPEARANCE_CANDIDATES\"" },
+  { name = "Alphabetical", run = "cat \"$TERMSCOPE_ALPHA_CANDIDATES\"" },
+]
+display = "{split:\\t:1..}"
+output = "{split:\\t:0}"
+no_sort = true
+frecency = false
+
+[keybindings]
+ctrl-s = "cycle_sources"
+
+[preview]
+command = "\"$TERMSCOPE_PYTHON\" \"$TERMSCOPE_SCRIPT\" preview --pane-path \"$TERMSCOPE_PANE_PATH\" {split:\\t:0}"
+
+[ui]
+layout = "landscape"
+input_prompt = "> "
+
+[ui.preview_panel]
+size = 60
+footer = "Enter  Neovim  ·  Ctrl-O  Default app  ·  Ctrl-Y  Plannotator"
+border_type = "rounded"
+
+[ui.results_panel]
+border_type = "rounded"
