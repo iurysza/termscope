@@ -47,8 +47,21 @@ jobs:
 
           manifest = tomllib.loads(Path('herdr-plugin.toml').read_text())
           assert manifest['id'] == 'termscope'
-          assert manifest['min_herdr_version'] >= '0.7.0'
+          assert manifest['version'] == '0.2.0'
+          assert manifest['min_herdr_version'] >= '0.7.4'
           assert set(manifest['platforms']) == {'linux', 'macos'}
+          assert manifest['build'] == [{
+              'platforms': ['linux', 'macos'],
+              'command': ['sh', 'scripts/install-dependencies.sh'],
+          }]
           assert {a['id'] for a in manifest['actions']} == {'open', 'open-links'}
           assert {p['id'] for p in manifest['panes']} == {'picker', 'link-picker'}
+          assert all(p['placement'] == 'popup' for p in manifest['panes'])
+          assert all(p['width'] == '80%' and p['height'] == '60%' for p in manifest['panes'])
+
+          for path in Path('cable').glob('termscope-*.toml'):
+              channel = tomllib.loads(path.read_text())
+              assert len(channel['source']['command']) == 2
+              assert channel['source']['no_sort'] is True
+              assert channel['source']['frecency'] is False
           PY

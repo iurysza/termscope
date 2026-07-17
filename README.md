@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/iurysza/termscope/actions/workflows/ci.yml/badge.svg)](https://github.com/iurysza/termscope/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![herdr 0.7+](https://img.shields.io/badge/herdr-0.7%2B-8a2be2)
+![herdr 0.7.4+](https://img.shields.io/badge/herdr-0.7.4%2B-8a2be2)
 ![platforms: macOS • Linux](https://img.shields.io/badge/platforms-macOS%20%E2%80%A2%20Linux-informational)
 
 Open the files and links your agent just mentioned.
@@ -39,14 +39,16 @@ Termscope stays conservative:
 - verifies paths against the repo/worktree on disk
 - preserves `file:line` targets
 - falls back to a full repo picker when no visible file matches
-- opens outside the picker overlay, so the agent conversation stays where it is
+- uses a session-modal Herdr popup, leaving the tiled pane layout untouched
 
 ## Requirements
 
-- [Herdr](https://herdr.dev) `>= 0.7.0` or tmux
+- [Herdr](https://herdr.dev) `>= 0.7.4` or tmux
 - Python `>= 3.10`
 - [`fd`](https://github.com/sharkdp/fd)
-- [`fzf`](https://github.com/junegunn/fzf)
+- [Homebrew](https://brew.sh) when a Herdr plugin install needs to add or upgrade Television
+- [Television](https://alexpasmantier.github.io/television/) `>= 0.15` (provisioned automatically when needed)
+- [`bat`](https://github.com/sharkdp/bat) is optional for syntax-highlighted previews
 - `nvim` for the default file-open action
 - `open` on macOS or `xdg-open` on Linux for default-app opens
 
@@ -59,11 +61,18 @@ environment provides it.
 herdr plugin install iurysza/termscope
 ```
 
-For local development:
+The install includes a visible build step that installs or upgrades Television
+through Homebrew when `tv` is missing or older than `0.15`. It never installs
+Homebrew itself; a missing Homebrew installation aborts cleanly before the
+plugin is registered.
+
+For local development (`plugin link` does not run install-time build steps):
 
 ```bash
 git clone https://github.com/iurysza/termscope.git
-herdr plugin link ./termscope
+cd termscope
+./scripts/install-dependencies.sh
+herdr plugin link "$PWD"
 ```
 
 Verify Herdr sees the actions:
@@ -110,7 +119,7 @@ File picker controls:
 | --- | --- |
 | `Enter` | Open in a new Neovim split beside the source pane |
 | `Ctrl-O` | Open with the default app |
-| `Ctrl-Y` | Send `/plannotator-annotate <file>` to the source pane |
+| `Ctrl-Y` | Agent pane: send `/plannotator-annotate <file>`; shell pane: run `plannotator annotate <file>` |
 | `Ctrl-S` | Toggle appearance order / alphabetical sort |
 
 Link picker controls:
@@ -160,7 +169,7 @@ export TERMSCOPE_SORT=alpha
 
 ## Dry run / debug
 
-See what the scanner would offer without opening `fzf`:
+See what the scanner would offer without opening Television:
 
 ```bash
 ./termscope scan --pane-path "$PWD" --pane-id "$HERDR_PANE_ID" --multiplexer herdr
@@ -177,10 +186,12 @@ selection decision.
 
 ## How it works
 
-Herdr plugin actions run without a TTY, so `termscope.open` does not run `fzf`
-directly. It opens a Herdr-managed overlay pane. That pane inherits the source
-pane id/cwd, captures visible text with `herdr pane read --source visible`, scans
-the repo with `fd`, and runs the interactive picker.
+Herdr plugin actions run without a TTY, so `termscope.open` first opens an
+`80% × 60%` session-modal popup. The popup inherits the source pane id/cwd,
+captures visible text with `herdr pane read --source visible`, scans the repo
+with `fd`, and runs Television. Two bundled channels let `Ctrl-S` cycle between
+appearance and alphabetical order. File previews use `bat` when available and a
+built-in text preview otherwise.
 
 When you choose a file, Termscope asks Herdr to split beside the source pane and
 runs `nvim +line path`. For URLs, it uses the default opener unless

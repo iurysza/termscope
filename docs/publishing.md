@@ -12,7 +12,7 @@ gh repo edit iurysza/termscope \
 gh repo edit iurysza/termscope \
   --add-topic herdr-plugin \
   --add-topic herdr \
-  --add-topic fzf \
+  --add-topic television \
   --add-topic tmux \
   --add-topic terminal \
   --add-topic python
@@ -39,19 +39,25 @@ marketplace index.
    ```bash
    git add .
    git commit -m "chore: prepare Termscope release"
-   git tag v0.1.0
+   git tag v0.2.0
    git push origin main --tags
-   gh release create v0.1.0 --title "v0.1.0" --notes-file CHANGELOG.md
+   gh release create v0.2.0 --title "v0.2.0" --notes-file CHANGELOG.md
    ```
 
 ## Install smoke test
 
 On a clean machine or temp user profile:
 
+Start with Television absent or older than `0.15`, but with Homebrew available:
+
 ```bash
+herdr --version  # 0.7.4+
 herdr plugin install iurysza/termscope
+tv --version     # now 0.15+
 herdr plugin action list --plugin termscope
 ```
+
+Also verify installation aborts before registration when Homebrew is absent.
 
 Then add keybindings from the README and run:
 

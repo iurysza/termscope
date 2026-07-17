@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -33,8 +36,7 @@ class ParsedTarget:
 
 
 @dataclass
-class FzfResult:
-    query: str = ""
+class PickerResult:
     key: str = ""
     selection: str = ""
 
@@ -91,7 +93,7 @@ class MultiplexerBackend(ABC):
 
     @abstractmethod
     def send_annotate_command(self, pane_id: str, file_path: str) -> None:
-        """Send /plannotator-annotate <file_path> + Enter to the source pane."""
+        """Request Plannotator through the source pane's active interface."""
         ...
 
     @abstractmethod
@@ -186,22 +188,35 @@ class TmuxBackend(MultiplexerBackend):
         os.execvp(tmux_cmd[0], tmux_cmd)
 
     def send_annotate_command(self, pane_id: str, file_path: str) -> None:
-        # Cancel copy mode if the source pane is in it, so the slash command
-        # reaches Pi's prompt instead of being swallowed by copy mode.
-        mode_result = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_in_mode}"],
+        # Cancel copy mode so the command reaches the source application.
+        pane_result = subprocess.run(
+            [
+                "tmux",
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "#{pane_in_mode}\t#{pane_current_command}",
+            ],
             text=True,
             capture_output=True,
             check=False,
         )
-        if mode_result.stdout.strip() == "1":
+        fields = pane_result.stdout.rstrip("\n").split("\t", 1)
+        in_copy_mode = fields[0] == "1"
+        current_command = fields[1].lower() if len(fields) == 2 else ""
+        if in_copy_mode:
             subprocess.run(
                 ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
                 check=False,
             )
 
         quoted_path = shlex.quote(file_path)
-        cmd_text = f"/plannotator-annotate {quoted_path}"
+        agent_commands = {"pi", "opencode", "claude", "codex"}
+        if not current_command or current_command in agent_commands:
+            cmd_text = f"/plannotator-annotate {quoted_path}"
+        else:
+            cmd_text = f"plannotator annotate {quoted_path}"
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "-l", cmd_text],
             check=False,
@@ -225,7 +240,7 @@ class HerdrBackend(MultiplexerBackend):
         return "herdr"
 
     def _herdr_bin(self) -> str:
-        return shutil.which("herdr") or "herdr"
+        return os.environ.get("HERDR_BIN_PATH") or shutil.which("herdr") or "herdr"
 
     def resolve_source_pane_path(self, pane_path: Path, pane_id: str) -> Path:
         if not pane_id:
@@ -287,8 +302,13 @@ class HerdrBackend(MultiplexerBackend):
     def send_annotate_command(self, pane_id: str, file_path: str) -> None:
         herdr = self._herdr_bin()
         quoted_path = shlex.quote(file_path)
+        source_agent = os.environ.get("SOURCE_PANE_AGENT")
+        if source_agent is None or source_agent:
+            command = f"/plannotator-annotate {quoted_path}"
+        else:
+            command = f"plannotator annotate {quoted_path}"
         subprocess.run(
-            [herdr, "pane", "run", pane_id, f"/plannotator-annotate {quoted_path}"],
+            [herdr, "pane", "run", pane_id, command],
             check=False,
         )
         self.show_message("Plannotator annotation requested")
@@ -302,7 +322,7 @@ class HerdrBackend(MultiplexerBackend):
 
 def detect_backend(pane_id: str) -> MultiplexerBackend:
     """Pick a backend from the pane id shape."""
-    if pane_id and re.match(r"^w\d+:p", pane_id):
+    if pane_id and re.match(r"^(?:w[0-9A-Za-z]+:p[0-9A-Za-z]+|\d+-\d+)$", pane_id):
         return HerdrBackend()
     return TmuxBackend()
 
@@ -495,7 +515,7 @@ def list_repo_files(search_root: Path) -> list[str]:
     if result.returncode != 0:
         return []
     lines = [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
-    # Cap at 5000 files — fzf can't handle more anyway
+    # Bound scan cost and picker startup time on very large repositories.
     return lines[:5000]
 
 
@@ -701,144 +721,198 @@ def resolve_existing_path(path_text: str, pane_path: Path, search_root: Path) ->
 
 
 # --------------------------------------------------------------------------- #
-# fzf
+# Television
 # --------------------------------------------------------------------------- #
 
-def parse_fzf_result(stdout: str) -> FzfResult:
-    if not stdout:
-        return FzfResult()
-    stdout = stdout.rstrip("\n")
-    lines = stdout.split("\n")
-    query = lines[0] if lines else ""
-    if len(lines) == 1:
-        return FzfResult(query=query)
+def parse_tv_result(stdout: str, expect_keys: tuple[str, ...]) -> PickerResult:
+    """Parse Television's stdout selection protocol.
 
-    rest = lines[1:]
-    first_rest = rest[0]
-    remaining = "\n".join(rest[1:]) if len(rest) > 1 else ""
-
-    if first_rest in ("enter", "ctrl-o", "ctrl-y"):
-        return FzfResult(query=query, key=first_rest, selection=remaining)
-    if first_rest == "":
-        # Interactive Enter with --expect prints: query, blank key line, selection.
-        return FzfResult(query=query, selection=remaining)
-    return FzfResult(query=query, selection=first_rest)
-
-
-def _prepare_candidate_files(
-    candidates: list[str], initial_sort: str = "appearance"
-) -> tuple[Path, Path]:
-    """Write the original candidate order and sort-state files.
-
-    Returns the path to the original-order file and the state file.
-    The state file tracks which sort mode fzf is currently showing.
+    Enter prints only the selection. A key supplied through ``--expect`` prints
+    the key first, followed by the selection.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, prefix="termscope-candidates-", suffix=".txt"
-    ) as tmp:
-        tmp.write("\n".join(candidates))
-        if candidates:
-            tmp.write("\n")
-        candidates_path = Path(tmp.name)
-
-    state_path = candidates_path.with_suffix(".state")
-    state_path.write_text(initial_sort)
-    return candidates_path, state_path
+    lines = stdout.rstrip("\n").split("\n") if stdout else []
+    if not lines:
+        return PickerResult()
+    if lines[0] in expect_keys:
+        return PickerResult(key=lines[0], selection="\n".join(lines[1:]))
+    return PickerResult(selection="\n".join(lines))
 
 
-def _sort_toggle_bind(candidates_path: Path, state_path: Path) -> str:
-    """Build an fzf --bind expression that toggles sort with Ctrl-s."""
-    script = shlex.quote(sys.argv[0])
-    reorder = (
-        f"{sys.executable} {script} reorder "
-        f"--candidates-file {shlex.quote(str(candidates_path))} "
-        f"--state-file {shlex.quote(str(state_path))}"
-    )
-    return f"ctrl-s:reload({reorder})"
+def _television_cable_dir() -> Path:
+    return Path(__file__).resolve().parent / "cable"
 
 
-def _sort_candidate_list(candidates: list[str], sort: str) -> list[str]:
-    if sort == "alpha":
-        return sorted(candidates, key=lambda s: s.lower())
-    return candidates[:]
+def encode_candidate(candidate: str) -> str:
+    """Return a shell-safe opaque id for a Television candidate."""
+    return base64.urlsafe_b64encode(candidate.encode("utf-8")).decode("ascii").rstrip("=")
 
 
-def _run_fzf(
+def decode_candidate(encoded: str) -> str:
+    """Restore a candidate id emitted by the bundled Television channels."""
+    if not encoded or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded):
+        raise ValueError("invalid Television candidate id")
+    padding = "=" * (-len(encoded) % 4)
+    try:
+        return base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise ValueError("invalid Television candidate id") from exc
+
+
+def _write_candidate_file(path: Path, candidates: list[str]) -> None:
+    records = [f"{encode_candidate(candidate)}\t{candidate}" for candidate in candidates]
+    content = "\n".join(records)
+    if records:
+        content += "\n"
+    path.write_text(content, encoding="utf-8")
+
+
+def _picker_error(message: str) -> None:
+    print(f"termscope: {message}", file=sys.stderr)
+    herdr = os.environ.get("HERDR_BIN_PATH")
+    if herdr:
+        subprocess.run(
+            [herdr, "notification", "show", f"Termscope: {message}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+
+def _television_is_supported(television: str) -> bool:
+    try:
+        result = subprocess.run(
+            [television, "--version"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    match = re.search(r"\btelevision\s+(\d+)\.(\d+)\.(\d+)", result.stdout)
+    return bool(match and tuple(map(int, match.groups())) >= (0, 15, 0))
+
+
+def _run_tv(
     candidates: list[str],
     header: str,
-    expect: str,
+    expect_keys: tuple[str, ...],
     sort: str = "appearance",
     cwd: Path | None = None,
-    extra_args: list[str] | None = None,
-) -> FzfResult | None:
-    input_lines = [c for c in candidates if c.strip()]
+    preview: bool = True,
+) -> PickerResult | None:
+    input_lines = [candidate for candidate in candidates if candidate.strip()]
     if not input_lines:
         return None
 
-    candidates_path, state_path = _prepare_candidate_files(input_lines, sort)
-    display_lines = _sort_candidate_list(input_lines, sort)
-    input_text = "\n".join(display_lines)
-    if display_lines:
-        input_text += "\n"
+    television = shutil.which("tv")
+    if not television:
+        _picker_error("television (tv) not found")
+        raise SystemExit(1)
+    if not _television_is_supported(television):
+        _picker_error("Television 0.15+ is required")
+        raise SystemExit(1)
 
-    fzf_cmd = [
-        "fzf",
-        "--reverse",
-        "--print-query",
-        "--header",
-        header,
-        "--expect",
-        expect,
-        "--bind",
-        _sort_toggle_bind(candidates_path, state_path),
-    ]
-    if extra_args:
-        fzf_cmd.extend(extra_args)
+    cwd = cwd or Path.cwd()
+    with tempfile.TemporaryDirectory(prefix="termscope-tv-") as temp_dir:
+        temp_path = Path(temp_dir)
+        appearance_path = temp_path / "appearance.txt"
+        alpha_path = temp_path / "alpha.txt"
+        _write_candidate_file(appearance_path, input_lines)
+        _write_candidate_file(alpha_path, sorted(input_lines, key=str.lower))
 
-    proc = None
-    try:
-        proc = subprocess.run(
-            fzf_cmd,
-            input=input_text,
-            cwd=cwd,
-            text=True,
-            stdout=subprocess.PIPE,
+        env = os.environ.copy()
+        env.update(
+            {
+                "TERMSCOPE_APPEARANCE_CANDIDATES": str(appearance_path),
+                "TERMSCOPE_ALPHA_CANDIDATES": str(alpha_path),
+                "TERMSCOPE_PANE_PATH": str(cwd),
+                "TERMSCOPE_PYTHON": sys.executable,
+                "TERMSCOPE_SCRIPT": str(Path(__file__).resolve()),
+            }
         )
-    except FileNotFoundError:
-        print("termscope: fzf not found", file=sys.stderr)
-        return None
-    finally:
-        for p in (candidates_path, state_path):
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
 
-    if proc is None or proc.returncode >= 2:
-        return None
-    return parse_fzf_result(proc.stdout)
+        command = [
+            television,
+            "--cable-dir",
+            str(_television_cable_dir()),
+            "--no-remote",
+            "--no-help-panel",
+            "--input-header",
+            header,
+        ]
+        if expect_keys:
+            command.extend(["--expect", ";".join(expect_keys)])
+        if not preview:
+            command.append("--no-preview")
+        command.append(f"termscope-{sort}")
+
+        try:
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                check=False,
+            )
+        except FileNotFoundError:
+            _picker_error("television (tv) not found")
+            raise SystemExit(1)
+
+    if result.returncode != 0:
+        _picker_error(f"Television failed with status {result.returncode}")
+        raise SystemExit(result.returncode)
+
+    if result.stdout == "":
+        return PickerResult()
+    picker_result = parse_tv_result(result.stdout, expect_keys)
+    if not picker_result.selection:
+        _picker_error("Television returned an invalid selection")
+        raise SystemExit(1)
+    try:
+        picker_result.selection = decode_candidate(picker_result.selection)
+    except ValueError:
+        _picker_error("Television returned an invalid selection")
+        raise SystemExit(1)
+    if picker_result.selection not in input_lines:
+        _picker_error("Television returned an unknown selection")
+        raise SystemExit(1)
+    return picker_result
 
 
-def run_fzf_visible(
-    candidates: list[str],
-    search_root: Path,
-    sort: str = "appearance",
-    header_label: str = "visible files in",
-) -> FzfResult | None:
-    return _run_fzf(
+def display_path(path: Path) -> str:
+    try:
+        relative = path.relative_to(Path.home())
+    except ValueError:
+        return str(path)
+    return "~" if relative == Path(".") else f"~/{relative}"
+
+
+def run_tv_visible(
+    candidates: list[str], search_root: Path, sort: str = "appearance"
+) -> PickerResult | None:
+    return _run_tv(
         candidates,
-        f"{header_label}: {search_root} | enter=nvim  ctrl-o=default app  ctrl-y=annotate  ctrl-s=toggle sort",
-        "enter,ctrl-o,ctrl-y",
+        f"Files — {display_path(search_root)}",
+        ("ctrl-o", "ctrl-y"),
         sort=sort,
+        cwd=search_root,
     )
 
 
-def run_fzf_links(candidates: list[str], sort: str = "appearance") -> FzfResult | None:
-    return _run_fzf(
+def run_tv_links(
+    candidates: list[str], pane_path: Path, sort: str = "appearance"
+) -> PickerResult | None:
+    return _run_tv(
         candidates,
-        "visible links | enter=open in browser  ctrl-y=copy  ctrl-s=toggle sort",
-        "enter,ctrl-y",
+        "Visible links — Enter opens · Ctrl-Y copies · Ctrl-S changes order",
+        ("ctrl-y",),
         sort=sort,
+        cwd=pane_path,
+        preview=False,
     )
 
 
@@ -849,69 +923,18 @@ def sort_file_list(files: list[str], sort: str = "appearance") -> list[str]:
     return files
 
 
-def run_fzf_full_repo(search_root: Path, query: str, sort: str = "appearance") -> FzfResult | None:
-    """Show all repo files in a full fzf picker. Used as fallback when
-    no visible candidates are found on screen."""
+def run_tv_full_repo(search_root: Path, sort: str = "appearance") -> PickerResult | None:
+    """Show all repo files when no visible candidate exists."""
     files = list_repo_files(search_root)
     if not files:
         return None
-    return _run_fzf(
+    return _run_tv(
         files,
-        f"all files in: {search_root} | enter=nvim  ctrl-o=default app  ctrl-s=toggle sort",
-        "enter,ctrl-o,ctrl-y",
+        f"All files — {display_path(search_root)}",
+        ("ctrl-o", "ctrl-y"),
         sort=sort,
         cwd=search_root,
     )
-
-
-def run_fallback_picker(search_root: Path, query: str, sort: str = "appearance") -> str | None:
-    files = list_repo_files(search_root)
-    input_lines = [f for f in files if f.strip()]
-    if not input_lines:
-        return None
-
-    candidates_path, state_path = _prepare_candidate_files(input_lines, sort)
-    display_lines = _sort_candidate_list(input_lines, sort)
-    input_text = "\n".join(display_lines)
-    if display_lines:
-        input_text += "\n"
-
-    fzf_cmd = [
-        "fzf",
-        "--reverse",
-        "--select-1",
-        "--exit-0",
-        "--query",
-        query,
-        "--header",
-        f"find file in: {search_root} | query: {query} | ctrl-s=toggle sort",
-        "--bind",
-        _sort_toggle_bind(candidates_path, state_path),
-    ]
-
-    proc = None
-    try:
-        proc = subprocess.run(
-            fzf_cmd,
-            cwd=search_root,
-            input=input_text,
-            text=True,
-            stdout=subprocess.PIPE,
-        )
-    except FileNotFoundError:
-        print("termscope: fzf not found", file=sys.stderr)
-        return None
-    finally:
-        for p in (candidates_path, state_path):
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    if proc is None or proc.returncode >= 2:
-        return None
-    selected = proc.stdout.strip().split("\n")[0] if proc.stdout.strip() else ""
-    return selected if selected else None
 
 
 # --------------------------------------------------------------------------- #
@@ -1010,12 +1033,12 @@ def debug_dump(state: DebugState) -> None:
     (run_dir / "files.txt").write_text("\n".join(state.indexed_files), encoding="utf-8")
     (run_dir / "candidates.txt").write_text("\n".join(state.candidates), encoding="utf-8")
 
-    fzf_data = {
+    picker_data = {
         "query": state.query,
         "key": state.key,
         "selection": state.selection,
     }
-    (run_dir / "fzf.json").write_text(json.dumps(fzf_data, indent=2), encoding="utf-8")
+    (run_dir / "picker.json").write_text(json.dumps(picker_data, indent=2), encoding="utf-8")
 
     decision = {
         "pane_path": state.pane_path,
@@ -1085,31 +1108,108 @@ def _open_target(
         open_in_nvim_split(resolved, parsed.line, pane_path, pane_id, backend)
 
 
-def _open_fallback_popup(
-    mode: str, query: str, line: str, pane_path: Path, pane_id: str
-) -> NoReturn:
-    cmd = [
-        sys.argv[0],
-        "fallback",
-        "--mode",
-        mode,
-        "--pane-path",
-        str(pane_path),
-        "--pane-id",
-        pane_id,
-        "--query",
-        query,
-    ]
-    if line:
-        cmd.extend(["--line", line])
-    inner = shlex.join(cmd)
+def preview_target(target_text: str, pane_path: Path) -> None:
+    """Render a preview with one wall-clock bound around every filesystem call."""
+    def timeout_preview(_signum: int, _frame: object) -> None:
+        raise TimeoutError
 
-    tmux_cmd = ["tmux", "display-popup"]
-    if pane_id:
-        tmux_cmd += ["-t", pane_id]
-    tmux_cmd += ["-E", "-w", "80%", "-h", "60%", inner]
+    previous_handler = signal.signal(signal.SIGALRM, timeout_preview)
+    signal.setitimer(signal.ITIMER_REAL, 4)
+    try:
+        _render_preview(target_text, pane_path)
+    except TimeoutError:
+        print("termscope: preview timed out")
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
-    os.execvp(tmux_cmd[0], tmux_cmd)
+
+def _render_preview(target_text: str, pane_path: Path) -> None:
+    parsed = parse_selected_target(target_text)
+    search_root = find_search_root(pane_path)
+    resolved = resolve_existing_path(parsed.path, pane_path, search_root)
+    if not resolved:
+        print(target_text)
+        return
+
+    if resolved.is_dir():
+        entries: list[Path] = []
+        has_more = False
+        try:
+            with os.scandir(resolved) as directory:
+                for index, entry in enumerate(directory):
+                    if index == 200:
+                        has_more = True
+                        break
+                    entries.append(Path(entry.path))
+            entries.sort(key=lambda path: (not path.is_dir(), path.name.lower()))
+        except OSError as exc:
+            print(f"termscope: preview failed: {exc}")
+            return
+        print(f"{resolved}/")
+        for entry in entries:
+            suffix = "/" if entry.is_dir() else ""
+            print(f"  {entry.name}{suffix}")
+        if has_more:
+            print("  … more entries")
+        return
+
+    if not resolved.is_file():
+        print("termscope: preview unavailable for non-regular file")
+        return
+
+    line_number = int(parsed.line) if parsed.line.isdigit() else 0
+    max_bytes = 1_048_576
+    try:
+        file_size = resolved.stat().st_size
+    except OSError as exc:
+        print(f"termscope: preview failed: {exc}")
+        return
+    bat = shutil.which("bat") if file_size <= max_bytes else None
+    if bat:
+        command = [bat, "--color=always", "--paging=never", "--style=numbers"]
+        if line_number:
+            start = max(1, line_number - 15)
+            end = line_number + 35
+            command.extend(
+                ["--line-range", f"{start}:{end}", "--highlight-line", str(line_number)]
+            )
+        else:
+            command.extend(["--line-range", "1:200"])
+        command.append(str(resolved))
+        try:
+            result = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=3,
+            )
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is not None and result.returncode == 0:
+            print(result.stdout[:200_000], end="")
+            return
+
+    try:
+        with resolved.open("rb") as source:
+            content = source.read(max_bytes + 1)
+    except OSError as exc:
+        print(f"termscope: preview failed: {exc}")
+        return
+    truncated = len(content) > max_bytes
+    lines = content[:max_bytes].decode("utf-8", errors="replace").splitlines()
+    start = max(0, line_number - 16) if line_number else 0
+    end = min(len(lines), line_number + 35) if line_number else min(len(lines), 200)
+    if line_number and start >= len(lines) and truncated:
+        print("termscope: target line lies beyond the 1 MiB fallback preview limit")
+        return
+    for index in range(start, end):
+        marker = ">" if index + 1 == line_number else " "
+        text = lines[index]
+        if len(text) > 1_000:
+            text = f"{text[:1_000]}…"
+        print(f"{marker} {index + 1:5} │ {text}")
 
 
 def cmd_pick(args: argparse.Namespace) -> None:
@@ -1141,7 +1241,7 @@ def cmd_pick(args: argparse.Namespace) -> None:
         candidates=candidates,
     )
 
-    # Filter out whitespace-only candidates that would produce an empty fzf.
+    # Filter out whitespace-only candidates that would produce an empty picker.
     real_candidates = [c for c in candidates if c.strip()]
     visible_empty = len(real_candidates) == 0
 
@@ -1168,30 +1268,29 @@ def cmd_pick(args: argparse.Namespace) -> None:
     if visible_empty:
         # No visible files — fall back to full repo listing so the picker
         # is never empty.
-        fzf_result = run_fzf_full_repo(search_root, "", sort=sort)
-        if fzf_result is None:
+        picker_result = run_tv_full_repo(search_root, sort=sort)
+        if picker_result is None:
             show_message("No files found in repo", backend)
             log_event("pick_empty_repo", pane_id=pane_id)
             debug_dump(state)
             return
     else:
-        fzf_result = run_fzf_visible(real_candidates, search_root)
+        picker_result = run_tv_visible(real_candidates, search_root, sort=sort)
 
-    if fzf_result is None:
+    if picker_result is None:
         log_event("pick_cancel_or_empty", pane_id=pane_id, candidate_count=len(real_candidates))
         debug_dump(state)
         return
 
-    state.query = fzf_result.query
-    state.key = fzf_result.key
-    state.selection = fzf_result.selection
+    state.key = picker_result.key
+    state.selection = picker_result.selection
 
-    selection = fzf_result.selection
+    selection = picker_result.selection
     if not selection:
         debug_dump(state)
         return
 
-    key = fzf_result.key or "enter"
+    key = picker_result.key or "enter"
     if key == "ctrl-o":
         mode = "default"
     elif key == "ctrl-y":
@@ -1221,47 +1320,6 @@ def cmd_open(args: argparse.Namespace) -> None:
     )
 
     _open_target(mode, target, source_pane_path, pane_id, search_root, state=state, backend=backend)
-
-
-def cmd_fallback(args: argparse.Namespace) -> None:
-    pane_path = Path(args.pane_path) if args.pane_path else Path.cwd()
-    pane_id = args.pane_id or ""
-    mode = args.mode
-    query = args.query
-    line = args.line or ""
-    sort = getattr(args, "sort", None) or os.environ.get("TERMSCOPE_SORT", "appearance")
-    backend = choose_backend(getattr(args, "multiplexer", "auto"), pane_id)
-    source_pane_path = resolve_source_pane_path(pane_path, pane_id, backend)
-    search_root = find_search_root(source_pane_path)
-
-    state = DebugState(
-        pane_path=str(pane_path),
-        pane_id=pane_id,
-        source_pane_path=str(source_pane_path),
-        search_root=str(search_root),
-        mode=mode,
-        line=line,
-        query=query,
-    )
-
-    selected = run_fallback_picker(search_root, query, sort)
-    if not selected:
-        debug_dump(state)
-        return
-
-    resolved = resolve_existing_path(selected, source_pane_path, search_root)
-    if not resolved:
-        resolved = search_root / selected
-
-    state.selection = selected
-    state.resolved_path = str(resolved)
-    debug_dump(state)
-    copy_to_clipboard(str(resolved))
-
-    if mode == "default":
-        open_with_default_app(resolved)
-    else:
-        open_in_nvim_split(resolved, line, source_pane_path, pane_id, backend)
 
 
 def cmd_links(args: argparse.Namespace) -> None:
@@ -1301,17 +1359,16 @@ def cmd_links(args: argparse.Namespace) -> None:
         backend=backend.name,
     )
 
-    fzf_result = run_fzf_links(real_candidates, sort=sort)
-    if fzf_result is None:
+    picker_result = run_tv_links(real_candidates, pane_path, sort=sort)
+    if picker_result is None:
         log_event("links_cancel_or_empty", pane_id=pane_id, candidate_count=len(real_candidates))
         debug_dump(state)
         return
 
-    state.query = fzf_result.query
-    state.key = fzf_result.key
-    state.selection = fzf_result.selection
+    state.key = picker_result.key
+    state.selection = picker_result.selection
 
-    selection = fzf_result.selection
+    selection = picker_result.selection
     if not selection:
         debug_dump(state)
         return
@@ -1321,32 +1378,11 @@ def cmd_links(args: argparse.Namespace) -> None:
     copy_to_clipboard(selection)
     debug_dump(state)
 
-    if fzf_result.key == "ctrl-y":
+    if picker_result.key == "ctrl-y":
         show_message("Link copied to clipboard", backend)
         return
 
     open_url(selection)
-
-
-def cmd_reorder(args: argparse.Namespace) -> None:
-    """Print candidates in the opposite sort order and update the state file.
-
-    This is used by fzf's reload action when the user presses Ctrl-s.
-    """
-    candidates_file = Path(args.candidates_file)
-    state_file = Path(args.state_file)
-    current = state_file.read_text().strip() if state_file.exists() else "appearance"
-    next_sort = "alpha" if current == "appearance" else "appearance"
-
-    lines = candidates_file.read_text().splitlines()
-    if next_sort == "alpha":
-        lines.sort(key=lambda s: s.lower())
-    state_file.write_text(next_sort)
-
-    output = "\n".join(lines)
-    if lines:
-        output += "\n"
-    print(output, end="")
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
@@ -1398,15 +1434,6 @@ def main() -> None:
     open_parser.add_argument("--pane-id", required=True)
     open_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
 
-    fallback_parser = subparsers.add_parser("fallback")
-    fallback_parser.add_argument("--mode", choices=["nvim", "default"], required=True)
-    fallback_parser.add_argument("--pane-path", required=True)
-    fallback_parser.add_argument("--pane-id", required=True)
-    fallback_parser.add_argument("--query", required=True)
-    fallback_parser.add_argument("--line", default="")
-    fallback_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
-    fallback_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
-
     scan_parser = subparsers.add_parser("scan")
     scan_parser.add_argument("--pane-path", required=True)
     scan_parser.add_argument("--pane-id", required=True)
@@ -1419,9 +1446,9 @@ def main() -> None:
     links_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
     links_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
-    reorder_parser = subparsers.add_parser("reorder")
-    reorder_parser.add_argument("--candidates-file", required=True)
-    reorder_parser.add_argument("--state-file", required=True)
+    preview_parser = subparsers.add_parser("preview")
+    preview_parser.add_argument("--pane-path", required=True)
+    preview_parser.add_argument("target")
 
     args = parser.parse_args()
     log_event("start", command=args.command, argv=sys.argv[1:])
@@ -1430,14 +1457,16 @@ def main() -> None:
         cmd_pick(args)
     elif args.command == "open":
         cmd_open(args)
-    elif args.command == "fallback":
-        cmd_fallback(args)
     elif args.command == "scan":
         cmd_scan(args)
     elif args.command == "links":
         cmd_links(args)
-    elif args.command == "reorder":
-        cmd_reorder(args)
+    elif args.command == "preview":
+        try:
+            target = decode_candidate(args.target)
+        except ValueError as exc:
+            raise SystemExit(f"termscope: {exc}") from exc
+        preview_target(target, Path(args.pane_path))
 
 
 if __name__ == "__main__":
