@@ -2,6 +2,9 @@
 
 ![termscope cover](./assets/cover.png)
 
+
+
+
 [![CI](https://github.com/iurysza/termscope/actions/workflows/ci.yml/badge.svg)](https://github.com/iurysza/termscope/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![herdr 0.7.4+](https://img.shields.io/badge/herdr-0.7.4%2B-8a2be2)
@@ -23,7 +26,8 @@ Ctrl-E        →  pick a visible link  →  browser opens it
 
 ## Demo
 
-https://github.com/user-attachments/assets/f57e00f0-e7eb-4824-9e6e-78a90fc58e1a
+https://github.com/user-attachments/assets/af573bbc-abf9-4947-9ed6-955723b722f5
+
 
 ## Why
 
