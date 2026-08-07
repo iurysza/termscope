@@ -3,6 +3,7 @@ name = "termscope-alpha"
 description = "Pick visible terminal targets in alphabetical order"
 
 [source]
+shell = "bash"
 command = [
   { name = "Alphabetical", run = "cat \"$TERMSCOPE_ALPHA_CANDIDATES\"" },
   { name = "Appearance", run = "cat \"$TERMSCOPE_APPEARANCE_CANDIDATES\"" },
@@ -16,6 +17,7 @@ frecency = false
 ctrl-s = "cycle_sources"
 
 [preview]
+shell = "bash"
 command = "\"$TERMSCOPE_PYTHON\" \"$TERMSCOPE_SCRIPT\" preview --pane-path \"$TERMSCOPE_PANE_PATH\" {split:\\t:0}"
 
 [ui]
