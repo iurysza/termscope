@@ -12,9 +12,10 @@
 
 Open the files and links your agent just mentioned.
 
-`termscope` turns terminal output into a jump list. It reads the active pane's
-visible terminal viewport, finds real files and URLs, then opens the selected
-target beside the conversation you were already reading.
+`termscope` turns terminal output into a jump list. It reads the visible
+terminal viewport of every pane in the current window/tab, finds real files and
+URLs, then opens the selected target beside the conversation you were already
+reading.
 
 ```text
 visible terminal viewport
@@ -35,11 +36,11 @@ Agents constantly mention files: stack traces, changed tests, docs, configs,
 links, PRs. `termscope` lets you keep up without doing the little dance:
 select text, copy, cd, paste, fix the path, add the line number.
 
-If it's visible in the pane and exists in the repo, you can jump to it.
+If it's visible in the window and exists in the repo, you can jump to it.
 
 Termscope stays conservative:
 
-- scans only the active pane's visible text
+- scans only the visible text of the current window's panes
 - verifies paths against the repo/worktree on disk
 - preserves `file:line` targets
 - falls back to a full repo picker when no visible file matches

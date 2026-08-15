@@ -335,12 +335,19 @@ class TestCandidateEncoding(unittest.TestCase):
 
 class TestCapturePaneVisibleOnly(unittest.TestCase):
     def test_no_limit_flag(self):
-        completed = SimpleNamespace(returncode=0, stdout="line1\nline2\n")
-        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["tmux", "capture-pane"]:
+                return SimpleNamespace(returncode=0, stdout="line1\nline2\n")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
             result = tfp.capture_pane_text("%42")
 
         self.assertEqual(result, "line1\nline2\n")
-        cmd = run.call_args.args[0]
+        cmd = next(c for c in calls if c[:2] == ["tmux", "capture-pane"])
         self.assertNotIn("-S", cmd)
         # No numeric limit should be present
         for arg in cmd:
@@ -348,13 +355,85 @@ class TestCapturePaneVisibleOnly(unittest.TestCase):
                              f"unexpected limit arg: {arg}")
 
     def test_pane_id_passed(self):
-        completed = SimpleNamespace(returncode=0, stdout="pane text")
-        with patch.object(tfp.subprocess, "run", return_value=completed) as run:
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["tmux", "capture-pane"]:
+                return SimpleNamespace(returncode=0, stdout="pane text")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
             tfp.capture_pane_text("%99")
 
-        cmd = run.call_args.args[0]
+        cmd = next(c for c in calls if c[:2] == ["tmux", "capture-pane"])
         self.assertIn("-t", cmd)
         self.assertIn("%99", cmd)
+
+    def test_captures_all_window_panes(self):
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["tmux", "list-panes"]:
+                return SimpleNamespace(returncode=0, stdout="%1\n%2\n")
+            if cmd[:2] == ["tmux", "display-message"]:
+                if cmd[-1] == "#{pane_id}":
+                    return SimpleNamespace(returncode=0, stdout="%1\n")
+                return SimpleNamespace(returncode=0, stdout="0")
+            if cmd[:2] == ["tmux", "capture-pane"]:
+                target = cmd[cmd.index("-t") + 1]
+                return SimpleNamespace(returncode=0, stdout=f"text from {target}\n")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            result = tfp.capture_pane_text("%1")
+
+        self.assertEqual(result, "text from %1\n\ntext from %2\n")
+
+    def test_herdr_captures_all_tab_panes(self):
+        pane_list = {
+            "result": {
+                "panes": [
+                    {"pane_id": "w5:p1", "tab_id": "w5:t1"},
+                    {"pane_id": "w5:p2", "tab_id": "w5:t1"},
+                    {"pane_id": "w6:p1", "tab_id": "w6:t1"},
+                ]
+            }
+        }
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1:3] == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps(pane_list))
+            if cmd[1:3] == ["pane", "read"]:
+                return SimpleNamespace(returncode=0, stdout=f"text from {cmd[3]}\n")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.dict(tfp.os.environ, {"HERDR_PANE_ID": "w9:p9"}), \
+                patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            result = tfp.HerdrBackend().capture_pane_text("w5:p1")
+
+        self.assertEqual(result, "text from w5:p1\n\ntext from w5:p2\n")
+
+
+class TestMergeLinkCandidates(unittest.TestCase):
+    def test_appends_urls_after_paths(self):
+        text = "see https://example.com/a and docs/x.md\n"
+        merged = tfp.merge_link_candidates(["docs/x.md"], text)
+        self.assertEqual(merged, ["docs/x.md", "https://example.com/a"])
+
+    def test_dedupes_existing(self):
+        text = "https://example.com/a\n"
+        merged = tfp.merge_link_candidates(["https://example.com/a"], text)
+        self.assertEqual(merged, ["https://example.com/a"])
+
+
+class TestUrlPreview(unittest.TestCase):
+    def test_preview_prints_url(self):
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            tfp._render_preview("https://example.com/a", Path("/tmp"))
+        self.assertEqual(buf.getvalue().strip(), "https://example.com/a")
 
     def test_copy_mode_viewport_capture(self):
         """When pane is in copy mode, capture the scrolled viewport."""
