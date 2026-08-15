@@ -124,6 +124,33 @@ class TmuxBackend(MultiplexerBackend):
         return pane_path
 
     def capture_pane_text(self, pane_id: str) -> str:
+        text = self._capture_single(pane_id)
+        if not pane_id:
+            return text
+        try:
+            listing = subprocess.run(
+                ["tmux", "list-panes", "-t", pane_id, "-F", "#{pane_id}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            canon = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_id}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            ).stdout.strip()
+        except FileNotFoundError:
+            return text
+        if listing.returncode != 0:
+            return text
+        texts = [text]
+        for pid in listing.stdout.split():
+            if pid and pid != canon:
+                texts.append(self._capture_single(pid))
+        return "\n".join(texts)
+
+    def _capture_single(self, pane_id: str) -> str:
         cmd = ["tmux", "capture-pane", "-pJ"]
 
         # If the source pane is in copy mode, capture the scrolled viewport
@@ -263,13 +290,43 @@ class HerdrBackend(MultiplexerBackend):
         return pane_path
 
     def capture_pane_text(self, pane_id: str) -> str:
-        result = subprocess.run(
-            [self._herdr_bin(), "pane", "read", pane_id, "--source", "visible"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        return result.stdout
+        texts = []
+        for pid in self._tab_pane_ids(pane_id):
+            result = subprocess.run(
+                [self._herdr_bin(), "pane", "read", pid, "--source", "visible"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            texts.append(result.stdout)
+        return "\n".join(texts)
+
+    def _tab_pane_ids(self, pane_id: str) -> list[str]:
+        """All panes in pane_id's tab — source pane first, skipping our own popup."""
+        # Sibling panes' relative paths resolve against the source pane's root.
+        try:
+            result = subprocess.run(
+                [self._herdr_bin(), "pane", "list"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            panes = json.loads(result.stdout)["result"]["panes"]
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+            return [pane_id]
+        tab_id = next((p.get("tab_id") for p in panes if p.get("pane_id") == pane_id), None)
+        if tab_id is None:
+            return [pane_id]
+        own_id = os.environ.get("HERDR_PANE_ID")
+        ids = [
+            p["pane_id"]
+            for p in panes
+            if p.get("tab_id") == tab_id and p["pane_id"] != own_id
+        ]
+        if pane_id not in ids:
+            return [pane_id]
+        ids.sort(key=lambda pid: pid != pane_id)
+        return ids
 
     def open_in_nvim_split(
         self, path: Path, line: str, pane_path: Path, pane_id: str
@@ -472,6 +529,15 @@ def extract_visible_links(screen_text: str, sort: str = "appearance") -> list[st
             add(m.group(0), i)
 
     return sort_items(matches, sort)
+
+
+def merge_link_candidates(candidates: list[str], screen_text: str) -> list[str]:
+    """Append visible URLs so one picker lists paths and links together."""
+    return candidates + [
+        link
+        for link in extract_visible_links(screen_text, sort="appearance")
+        if link not in candidates
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -1125,6 +1191,9 @@ def preview_target(target_text: str, pane_path: Path) -> None:
 
 
 def _render_preview(target_text: str, pane_path: Path) -> None:
+    if target_text.startswith(("http://", "https://")):
+        print(target_text)
+        return
     parsed = parse_selected_target(target_text)
     search_root = find_search_root(pane_path)
     resolved = resolve_existing_path(parsed.path, pane_path, search_root)
@@ -1226,6 +1295,7 @@ def cmd_pick(args: argparse.Namespace) -> None:
     candidates = extract_visible_candidates(
         screen_text, repo_paths, search_root, source_pane_path, sort="appearance"
     )
+    candidates = merge_link_candidates(candidates, screen_text)
 
     state = DebugState(
         pane_path=str(pane_path),
@@ -1291,6 +1361,14 @@ def cmd_pick(args: argparse.Namespace) -> None:
         return
 
     key = picker_result.key or "enter"
+    if selection.startswith(("http://", "https://")):
+        state.mode = "url"
+        debug_dump(state)
+        if key == "ctrl-y":
+            copy_to_clipboard(selection)
+            return
+        open_url(selection)
+
     if key == "ctrl-o":
         mode = "default"
     elif key == "ctrl-y":
