@@ -26,7 +26,7 @@ input_prompt = "> "
 
 [ui.preview_panel]
 size = 60
-footer = "Enter  Neovim  ·  Ctrl-O  Default app  ·  Ctrl-Y  Plannotator"
+footer = "Enter  Neovim  ·  Ctrl-O  Default app  ·  Ctrl-Y  Plannotator  ·  URLs: Enter opens, Ctrl-Y copies"
 border_type = "rounded"
 
 [ui.results_panel]

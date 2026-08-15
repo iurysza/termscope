@@ -59,7 +59,7 @@ class TestManifest(unittest.TestCase):
             self.assertNotIn("'{}'", preview)
             self.assertEqual(
                 channel["ui"]["preview_panel"]["footer"],
-                "Enter  Neovim  ·  Ctrl-O  Default app  ·  Ctrl-Y  Plannotator",
+                "Enter  Neovim  ·  Ctrl-O  Default app  ·  Ctrl-Y  Plannotator  ·  URLs: Enter opens, Ctrl-Y copies",
             )
 
 
