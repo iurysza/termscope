@@ -143,10 +143,11 @@ class TmuxBackend(MultiplexerBackend):
         except FileNotFoundError:
             return text
         if listing.returncode != 0:
+            log_event("capture_window_fallback", pane_id=pane_id, reason=listing.stderr.strip())
             return text
         texts = [text]
         for pid in listing.stdout.split():
-            if pid and pid != canon:
+            if pid and pid not in (canon, pane_id):
                 texts.append(self._capture_single(pid))
         return "\n".join(texts)
 
@@ -313,15 +314,17 @@ class HerdrBackend(MultiplexerBackend):
             )
             panes = json.loads(result.stdout)["result"]["panes"]
         except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+            log_event("capture_tab_fallback", pane_id=pane_id, reason="pane list unreadable")
             return [pane_id]
         tab_id = next((p.get("tab_id") for p in panes if p.get("pane_id") == pane_id), None)
         if tab_id is None:
+            log_event("capture_tab_fallback", pane_id=pane_id, reason="source pane not listed")
             return [pane_id]
         own_id = os.environ.get("HERDR_PANE_ID")
         ids = [
-            p["pane_id"]
+            p.get("pane_id")
             for p in panes
-            if p.get("tab_id") == tab_id and p["pane_id"] != own_id
+            if p.get("tab_id") == tab_id and p.get("pane_id") not in (None, own_id)
         ]
         if pane_id not in ids:
             return [pane_id]
@@ -989,13 +992,15 @@ def sort_file_list(files: list[str], sort: str = "appearance") -> list[str]:
     return files
 
 
-def run_tv_full_repo(search_root: Path, sort: str = "appearance") -> PickerResult | None:
-    """Show all repo files when no visible candidate exists."""
+def run_tv_full_repo(
+    search_root: Path, sort: str = "appearance", prepend: list[str] | None = None
+) -> PickerResult | None:
+    """Show all repo files when no visible file exists; visible URLs stay listed first."""
     files = list_repo_files(search_root)
     if not files:
         return None
     return _run_tv(
-        files,
+        (prepend or []) + files,
         f"All files — {display_path(search_root)}",
         ("ctrl-o", "ctrl-y"),
         sort=sort,
@@ -1292,10 +1297,11 @@ def cmd_pick(args: argparse.Namespace) -> None:
     screen_text = strip_ansi(screen_text)
     repo_paths = list_repo_files(search_root)
     sort = getattr(args, "sort", None) or os.environ.get("TERMSCOPE_SORT", "appearance")
-    candidates = extract_visible_candidates(
+    file_candidates = extract_visible_candidates(
         screen_text, repo_paths, search_root, source_pane_path, sort="appearance"
     )
-    candidates = merge_link_candidates(candidates, screen_text)
+    candidates = merge_link_candidates(file_candidates, screen_text)
+    links = candidates[len(file_candidates):]
 
     state = DebugState(
         pane_path=str(pane_path),
@@ -1312,8 +1318,9 @@ def cmd_pick(args: argparse.Namespace) -> None:
     )
 
     # Filter out whitespace-only candidates that would produce an empty picker.
+    # Fallback keys off visible *files* only: a lone URL must not hide the repo.
     real_candidates = [c for c in candidates if c.strip()]
-    visible_empty = len(real_candidates) == 0
+    visible_empty = not any(c.strip() for c in file_candidates)
 
     if visible_empty:
         log_event(
@@ -1338,7 +1345,7 @@ def cmd_pick(args: argparse.Namespace) -> None:
     if visible_empty:
         # No visible files — fall back to full repo listing so the picker
         # is never empty.
-        picker_result = run_tv_full_repo(search_root, sort=sort)
+        picker_result = run_tv_full_repo(search_root, sort=sort, prepend=links)
         if picker_result is None:
             show_message("No files found in repo", backend)
             log_event("pick_empty_repo", pane_id=pane_id)
@@ -1363,11 +1370,15 @@ def cmd_pick(args: argparse.Namespace) -> None:
     key = picker_result.key or "enter"
     if selection.startswith(("http://", "https://")):
         state.mode = "url"
+        state.resolved_path = selection
         debug_dump(state)
+        log_event("pick_url", pane_id=pane_id, key=key, url=selection)
         if key == "ctrl-y":
             copy_to_clipboard(selection)
+            show_message("Link copied to clipboard", backend)
             return
         open_url(selection)
+        return
 
     if key == "ctrl-o":
         mode = "default"

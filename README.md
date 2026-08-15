@@ -127,6 +127,9 @@ File picker controls:
 | `Ctrl-Y` | Agent pane: send `/plannotator-annotate <file>`; shell pane: run `plannotator annotate <file>` |
 | `Ctrl-S` | Toggle appearance order / alphabetical sort |
 
+Visible URLs are listed after the files. On a URL row, `Enter`/`Ctrl-O` open it
+with the default opener and `Ctrl-Y` copies it.
+
 Link picker controls:
 
 | Key | Action |

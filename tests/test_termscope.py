@@ -388,6 +388,43 @@ class TestCapturePaneVisibleOnly(unittest.TestCase):
 
         self.assertEqual(result, "text from %1\n\ntext from %2\n")
 
+    def test_list_panes_failure_falls_back_to_source_pane(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["tmux", "list-panes"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="no server")
+            if cmd[:2] == ["tmux", "capture-pane"]:
+                return SimpleNamespace(returncode=0, stdout="text from %1\n")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            result = tfp.capture_pane_text("%1")
+
+        self.assertEqual(result, "text from %1\n")
+        captures = [c for c in calls if c[:2] == ["tmux", "capture-pane"]]
+        self.assertEqual(len(captures), 1)
+
+    def test_alias_pane_id_not_double_captured(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["tmux", "list-panes"]:
+                return SimpleNamespace(returncode=0, stdout="%1\n%2\n")
+            if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{pane_id}":
+                return SimpleNamespace(returncode=0, stdout="%1\n")
+            if cmd[:2] == ["tmux", "capture-pane"]:
+                return SimpleNamespace(returncode=0, stdout="x\n")
+            return SimpleNamespace(returncode=0, stdout="0")
+
+        with patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            tfp.capture_pane_text("main:1.0")
+
+        captures = [c[c.index("-t") + 1] for c in calls if c[:2] == ["tmux", "capture-pane"]]
+        self.assertEqual(captures, ["main:1.0", "%2"])
+
     def test_herdr_captures_all_tab_panes(self):
         pane_list = {
             "result": {
@@ -411,6 +448,24 @@ class TestCapturePaneVisibleOnly(unittest.TestCase):
             result = tfp.HerdrBackend().capture_pane_text("w5:p1")
 
         self.assertEqual(result, "text from w5:p1\n\ntext from w5:p2\n")
+
+    def test_herdr_skips_own_pane_and_bad_entries(self):
+        pane_list = {
+            "result": {
+                "panes": [
+                    {"pane_id": "w5:p2", "tab_id": "w5:t1"},
+                    {"tab_id": "w5:t1"},
+                    {"pane_id": "w5:p1", "tab_id": "w5:t1"},
+                    {"pane_id": "w5:p3", "tab_id": "w5:t1"},
+                ]
+            }
+        }
+        completed = SimpleNamespace(returncode=0, stdout=json.dumps(pane_list))
+        with patch.dict(tfp.os.environ, {"HERDR_PANE_ID": "w5:p3"}), \
+                patch.object(tfp.subprocess, "run", return_value=completed):
+            ids = tfp.HerdrBackend()._tab_pane_ids("w5:p1")
+
+        self.assertEqual(ids, ["w5:p1", "w5:p2"])
 
 
 class TestMergeLinkCandidates(unittest.TestCase):
@@ -616,6 +671,51 @@ class TestCancelledPickerNoOpen(unittest.TestCase):
             tfp.cmd_pick(args)
 
         mock_open.assert_not_called()
+
+
+class TestPickUrlSelection(unittest.TestCase):
+    def _run(self, key):
+        args = SimpleNamespace(pane_path="/tmp/repo", pane_id="%1")
+        result = tfp.PickerResult(selection="https://x.test/a", key=key)
+        with patch.object(tfp, "capture_pane_text", return_value="https://x.test/a\n"), \
+             patch.object(tfp, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(tfp, "list_repo_files", return_value=["src/main.py"]), \
+             patch.object(tfp, "extract_visible_candidates", return_value=["src/main.py"]), \
+             patch.object(tfp, "run_tv_visible", return_value=result) as tv, \
+             patch.object(tfp, "open_url") as opener, \
+             patch.object(tfp, "copy_to_clipboard") as clip, \
+             patch.object(tfp, "show_message"), \
+             patch.object(tfp, "_open_target") as open_target, \
+             patch.object(tfp.subprocess, "run"):
+            tfp.cmd_pick(args)
+        return tv, opener, clip, open_target
+
+    def test_enter_opens_url(self):
+        tv, opener, clip, open_target = self._run(None)
+        self.assertEqual(tv.call_args.args[0], ["src/main.py", "https://x.test/a"])
+        opener.assert_called_once_with("https://x.test/a")
+        open_target.assert_not_called()
+
+    def test_ctrl_y_copies_url(self):
+        _, opener, clip, open_target = self._run("ctrl-y")
+        clip.assert_called_once_with("https://x.test/a")
+        opener.assert_not_called()
+        open_target.assert_not_called()
+
+    def test_url_only_screen_still_falls_back_to_full_repo(self):
+        args = SimpleNamespace(pane_path="/tmp/repo", pane_id="%1")
+        with patch.object(tfp, "capture_pane_text", return_value="https://x.test/a\n"), \
+             patch.object(tfp, "strip_ansi", side_effect=lambda x: x), \
+             patch.object(tfp, "list_repo_files", return_value=["src/main.py"]), \
+             patch.object(tfp, "extract_visible_candidates", return_value=[]), \
+             patch.object(tfp, "run_tv_visible") as visible, \
+             patch.object(tfp, "run_tv_full_repo", return_value=None) as full, \
+             patch.object(tfp, "show_message"), \
+             patch.object(tfp.subprocess, "run"):
+            tfp.cmd_pick(args)
+        visible.assert_not_called()
+        full.assert_called_once()
+        self.assertEqual(full.call_args.kwargs["prepend"], ["https://x.test/a"])
 
 
 class TestExtractVisibleCandidatesLineSuffix(unittest.TestCase):
