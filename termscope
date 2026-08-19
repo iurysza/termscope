@@ -996,11 +996,11 @@ def run_tv_full_repo(
     search_root: Path, sort: str = "appearance", prepend: list[str] | None = None
 ) -> PickerResult | None:
     """Show all repo files when no visible file exists; visible URLs stay listed first."""
-    files = list_repo_files(search_root)
-    if not files:
+    candidates = (prepend or []) + list_repo_files(search_root)
+    if not candidates:
         return None
     return _run_tv(
-        (prepend or []) + files,
+        candidates,
         f"All files — {display_path(search_root)}",
         ("ctrl-o", "ctrl-y"),
         sort=sort,
