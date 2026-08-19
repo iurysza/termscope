@@ -1031,6 +1031,23 @@ class TestTelevisionCommands(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], ["src/main.py"])
         self.assertEqual(run.call_args.kwargs["sort"], "alpha")
 
+    def test_full_repo_keeps_prepended_links_when_repo_is_empty(self):
+        url = "https://example.com"
+        with patch.object(tfp, "list_repo_files", return_value=[]), \
+             patch.object(tfp, "_run_tv", return_value=tfp.PickerResult(selection=url)) as run:
+            result = tfp.run_tv_full_repo(Path("/tmp/repo"), prepend=[url])
+
+        self.assertEqual(result.selection, url)
+        self.assertEqual(run.call_args.args[0], [url])
+
+    def test_full_repo_returns_none_when_all_candidates_are_empty(self):
+        with patch.object(tfp, "list_repo_files", return_value=[]), \
+             patch.object(tfp, "_run_tv") as run:
+            result = tfp.run_tv_full_repo(Path("/tmp/repo"))
+
+        self.assertIsNone(result)
+        run.assert_not_called()
+
     def test_missing_television_exits_nonzero(self):
         import io
         with patch.object(tfp.shutil, "which", return_value=None), \
