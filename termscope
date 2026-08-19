@@ -321,10 +321,11 @@ class HerdrBackend(MultiplexerBackend):
             log_event("capture_tab_fallback", pane_id=pane_id, reason="source pane not listed")
             return [pane_id]
         own_id = os.environ.get("HERDR_PANE_ID")
+        popup_id = own_id if own_id != pane_id else None
         ids = [
             p.get("pane_id")
             for p in panes
-            if p.get("tab_id") == tab_id and p.get("pane_id") not in (None, own_id)
+            if p.get("tab_id") == tab_id and p.get("pane_id") not in (None, popup_id)
         ]
         if pane_id not in ids:
             return [pane_id]

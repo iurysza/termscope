@@ -449,7 +449,23 @@ class TestCapturePaneVisibleOnly(unittest.TestCase):
 
         self.assertEqual(result, "text from w5:p1\n\ntext from w5:p2\n")
 
-    def test_herdr_skips_own_pane_and_bad_entries(self):
+    def test_herdr_direct_invocation_keeps_source_and_siblings(self):
+        pane_list = {
+            "result": {
+                "panes": [
+                    {"pane_id": "w5:p2", "tab_id": "w5:t1"},
+                    {"pane_id": "w5:p1", "tab_id": "w5:t1"},
+                ]
+            }
+        }
+        completed = SimpleNamespace(returncode=0, stdout=json.dumps(pane_list))
+        with patch.dict(tfp.os.environ, {"HERDR_PANE_ID": "w5:p1"}), \
+                patch.object(tfp.subprocess, "run", return_value=completed):
+            ids = tfp.HerdrBackend()._tab_pane_ids("w5:p1")
+
+        self.assertEqual(ids, ["w5:p1", "w5:p2"])
+
+    def test_herdr_skips_distinct_popup_and_bad_entries(self):
         pane_list = {
             "result": {
                 "panes": [
