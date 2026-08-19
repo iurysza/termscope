@@ -1,8 +1,12 @@
 # Publishing Termscope
 
-Termscope is published as a Herdr plugin from the repo root.
+Termscope is published as a source-only Herdr plugin from the repo root. Releases use [Release Please](https://github.com/googleapis/release-please) to update the version files and changelog, create the Git tag, and publish the GitHub Release.
 
-## One-time GitHub repo setup
+`version.txt` is the version source of truth. Each release PR keeps `version.txt`, `herdr-plugin.toml`, and `.release-please-manifest.json` aligned.
+
+## One-time GitHub repository setup
+
+Keep the repository metadata and marketplace topics configured:
 
 ```bash
 gh repo edit iurysza/termscope \
@@ -18,48 +22,47 @@ gh repo edit iurysza/termscope \
   --add-topic python
 ```
 
-The `herdr-plugin` topic is what makes the repo eligible for the Herdr plugin
-marketplace index.
+The `herdr-plugin` topic makes the repository eligible for the Herdr plugin marketplace index.
 
-## Release checklist
+Create a fine-grained personal access token with `contents:write` and `pull-requests:write` access to this repository. Add it to the repository's Actions secrets as `RELEASE_PLEASE_TOKEN`.
 
-1. Update `version` in `herdr-plugin.toml`.
-2. Update `CHANGELOG.md`.
-3. Run checks:
+Release Please must use this token instead of the default `GITHUB_TOKEN` so its release PRs and tags trigger the repository's normal workflows.
 
-   ```bash
-   python3 -m py_compile termscope termscope_herdr.py
-   python3 -m unittest discover -s tests
-   herdr plugin link "$PWD"
-   herdr plugin action list --plugin termscope
-   ```
+## Cut a release
 
-4. Commit and tag:
+1. Merge changes to `main` using Conventional Commits:
+   - `fix:` selects a patch release.
+   - `feat:` selects a minor release.
+   - `feat!:` or a `BREAKING CHANGE:` footer selects a major release.
+2. Wait for the `Release Please` workflow to open or update its release PR.
+3. Review the generated version changes and `CHANGELOG.md`, and confirm CI passes.
+4. Merge the release PR.
+5. The next `Release Please` workflow run creates the `vX.Y.Z` tag and matching GitHub Release.
 
-   ```bash
-   git add .
-   git commit -m "chore: prepare Termscope release"
-   git tag v0.2.0
-   git push origin main --tags
-   gh release create v0.2.0 --title "v0.2.0" --notes-file CHANGELOG.md
-   ```
+Do not create or force-push release tags by hand. Fix release problems on `main` and cut a new patch release.
+
+Termscope ships as source. There are no package artifacts or release assets to build or upload. Herdr checks out the selected Git ref, reads `herdr-plugin.toml`, and runs its install-time build command.
+
+Install a specific release by tag:
+
+```bash
+herdr plugin install iurysza/termscope --ref vX.Y.Z
+```
 
 ## Install smoke test
 
-On a clean machine or temp user profile:
-
-Start with Television absent or older than `0.15`, but with Homebrew available:
+On a clean machine or temporary user profile, start with Television absent or older than `0.15`, but with Homebrew available:
 
 ```bash
 herdr --version  # 0.7.4+
-herdr plugin install iurysza/termscope
+herdr plugin install iurysza/termscope --ref vX.Y.Z
 tv --version     # now 0.15+
 herdr plugin action list --plugin termscope
 ```
 
 Also verify installation aborts before registration when Homebrew is absent.
 
-Then add keybindings from the README and run:
+Then add the keybindings from the README and run:
 
 ```bash
 herdr server reload-config

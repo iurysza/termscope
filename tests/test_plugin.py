@@ -25,7 +25,8 @@ spec.loader.exec_module(wrapper)
 class TestManifest(unittest.TestCase):
     def test_popup_contract(self):
         manifest = tomllib.loads((ROOT / "herdr-plugin.toml").read_text())
-        self.assertEqual(manifest["version"], "0.2.0")
+        version = (ROOT / "version.txt").read_text().strip()
+        self.assertEqual(manifest["version"], version)
         self.assertEqual(manifest["min_herdr_version"], "0.7.4")
         self.assertEqual(
             manifest["build"],

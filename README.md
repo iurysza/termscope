@@ -201,6 +201,11 @@ When you choose a file, Termscope asks Herdr to split beside the source pane and
 runs `nvim +line path`. For URLs, it uses the default opener unless
 `TERMSCOPE_OPENER` is set.
 
+## Project documentation
+
+- [Publishing and releases](docs/publishing.md)
+- [Changelog](CHANGELOG.md)
+
 ## Development
 
 ```bash
