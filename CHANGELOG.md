@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/iurysza/termscope/compare/v0.2.0...v0.3.0) (2026-08-19)
+
+
+### Features
+
+* capture every pane in the current window/tab; merge visible links into the file picker ([5187e1e](https://github.com/iurysza/termscope/commit/5187e1ea978c0d08855fd97416a2d32cbb78690d))
+
+
+### Bug Fixes
+
+* **herdr:** keep source pane in direct capture ([c41c60c](https://github.com/iurysza/termscope/commit/c41c60c3bfffb60ce467759c4a7e4fd4d8627fcd))
+* **pick:** keep full-repo fallback when only URLs are visible; harden pane enumeration ([d5fe32a](https://github.com/iurysza/termscope/commit/d5fe32aa19795b2d366a592f4a931294e0ac7ec5))
+* **pick:** keep URLs when repo index is empty ([bfb005e](https://github.com/iurysza/termscope/commit/bfb005e2c7569661528682335ae4d953ab18eced))
+
 ## [0.2.0](https://github.com/iurysza/termscope/releases/tag/v0.2.0) (2026-07-17)
 
 ### Added
