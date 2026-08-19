@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 - Unreleased
+## [0.2.0](https://github.com/iurysza/termscope/releases/tag/v0.2.0) (2026-07-17)
 
 ### Added
 
