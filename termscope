@@ -593,6 +593,25 @@ def list_repo_files(search_root: Path) -> list[str]:
 # Candidate extraction
 # --------------------------------------------------------------------------- #
 
+PATH_EDGE = r"[A-Za-z0-9_./\\-]"
+
+
+def find_path_token(haystack: str, needle: str, extensionless: bool = False) -> int:
+    """Position of needle standing on its own, else -1.
+
+    A path character on the left rules it out: the "README.md" in
+    "docs/guide/README.md" is that file. Extensionless needles need a right
+    edge too, so "README" cannot claim "README.md"; the rest keep a loose one,
+    so "src" still matches in "src/main.py". ":" stays out, for line suffixes.
+    """
+    if not needle:
+        return -1
+    right = rf"(?!{PATH_EDGE})" if extensionless else ""
+    pattern = rf"(?<!{PATH_EDGE}){re.escape(needle)}{right}"
+    m = re.search(pattern, haystack)
+    return m.start() if m else -1
+
+
 def extract_visible_candidates(
     screen_text: str,
     repo_paths: list[str],
@@ -690,15 +709,17 @@ def extract_visible_candidates(
     for path in repo_paths:
         base = os.path.basename(path)
         abs_path = os.path.join(str(search_root), path)
-        variants = [path, "./" + path, abs_path, home_display(abs_path)]
+        variants = [
+            (v, False) for v in (path, "./" + path, abs_path, home_display(abs_path))
+        ]
 
         if path.endswith(".md"):
-            variants.append(path[:-3])
+            variants.append((path[:-3], True))
             if base.endswith(".md"):
-                variants.append(base[:-3])
+                variants.append((base[:-3], True))
 
-        for variant in variants:
-            pos = joined.find(variant)
+        for variant, extensionless in variants:
+            pos = find_path_token(joined, variant, extensionless)
             if pos >= 0:
                 after = joined[pos + len(variant):]
                 line_m = re.match(r':(\d+)(?::\d+)?', after)
