@@ -248,6 +248,17 @@ class TestExtractVisibleCandidates(unittest.TestCase):
         cands = tfp.extract_visible_candidates(text, repo, self.tmp, self.tmp)
         self.assertIn("README.md", cands)
 
+    def test_md_extension_omission_needs_a_whole_word(self):
+        # "README" inside a longer path is not a mention of the root README.md.
+        nested = self.tmp / "docs" / "guide"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "README.md").write_text("# nested")
+        text = "put the findings into docs/guide/README.md as the committed version"
+        repo = ["README.md", "docs/guide/README.md", "src/main.py"]
+        cands = tfp.extract_visible_candidates(text, repo, self.tmp, self.tmp)
+        self.assertIn("docs/guide/README.md", cands)
+        self.assertNotIn("README.md", cands)
+
     def test_basename_exact_line_match(self):
         text = "README.md\nsrc/main.py"
         repo = ["README.md", "src/main.py"]
