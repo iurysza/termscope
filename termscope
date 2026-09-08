@@ -869,6 +869,15 @@ def _picker_error(message: str) -> None:
         )
 
 
+def _television_path() -> str | None:
+    """Find Television when Herdr's plugin PATH omits Homebrew."""
+    candidates = [shutil.which("tv"), "/opt/homebrew/bin/tv", "/usr/local/bin/tv"]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _television_is_supported(television: str) -> bool:
     try:
         result = subprocess.run(
@@ -898,7 +907,7 @@ def _run_tv(
     if not input_lines:
         return None
 
-    television = shutil.which("tv")
+    television = _television_path()
     if not television:
         _picker_error("television (tv) not found")
         raise SystemExit(1)

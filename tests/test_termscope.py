@@ -967,6 +967,12 @@ class TestSortEnvVar(unittest.TestCase):
 
 
 class TestTelevisionCommands(unittest.TestCase):
+    def test_homebrew_television_is_found_without_homebrew_on_path(self):
+        with patch.object(tfp.shutil, "which", return_value=None), \
+             patch.object(tfp.os.path, "isfile", side_effect=lambda path: path == "/opt/homebrew/bin/tv"), \
+             patch.object(tfp.os, "access", return_value=True):
+            self.assertEqual(tfp._television_path(), "/opt/homebrew/bin/tv")
+
     def test_home_path_is_shortened_for_picker_header(self):
         self.assertEqual(tfp.display_path(Path.home() / "projects"), "~/projects")
 
@@ -991,7 +997,7 @@ class TestTelevisionCommands(unittest.TestCase):
                 stdout=f"ctrl-y\n{tfp.encode_candidate('a.py')}\n",
             )
 
-        with patch.object(tfp.shutil, "which", return_value="/opt/homebrew/bin/tv"), \
+        with patch.object(tfp, "_television_path", return_value="/opt/homebrew/bin/tv"), \
              patch.object(tfp, "_television_is_supported", return_value=True), \
              patch.object(tfp.subprocess, "run", side_effect=fake_run):
             result = tfp.run_tv_visible(
@@ -1016,7 +1022,7 @@ class TestTelevisionCommands(unittest.TestCase):
         self.assertNotIn("--no-preview", command)
 
     def test_alpha_preference_selects_alpha_first_channel(self):
-        with patch.object(tfp.shutil, "which", return_value="tv"), \
+        with patch.object(tfp, "_television_path", return_value="tv"), \
              patch.object(tfp, "_television_is_supported", return_value=True), \
              patch.object(
                  tfp.subprocess,
@@ -1031,7 +1037,7 @@ class TestTelevisionCommands(unittest.TestCase):
         self.assertIn("termscope-alpha", run.call_args.args[0])
 
     def test_link_picker_disables_preview(self):
-        with patch.object(tfp.shutil, "which", return_value="tv"), \
+        with patch.object(tfp, "_television_path", return_value="tv"), \
              patch.object(tfp, "_television_is_supported", return_value=True), \
              patch.object(
                  tfp.subprocess,
@@ -1077,7 +1083,7 @@ class TestTelevisionCommands(unittest.TestCase):
 
     def test_missing_television_exits_nonzero(self):
         import io
-        with patch.object(tfp.shutil, "which", return_value=None), \
+        with patch.object(tfp, "_television_path", return_value=None), \
              patch.object(tfp, "_picker_error") as error, \
              patch("sys.stderr", io.StringIO()), \
              self.assertRaises(SystemExit) as raised:
@@ -1086,7 +1092,7 @@ class TestTelevisionCommands(unittest.TestCase):
         error.assert_called_once_with("television (tv) not found")
 
     def test_zero_status_empty_output_is_cancel(self):
-        with patch.object(tfp.shutil, "which", return_value="tv"), \
+        with patch.object(tfp, "_television_path", return_value="tv"), \
              patch.object(tfp, "_television_is_supported", return_value=True), \
              patch.object(
                  tfp.subprocess,
@@ -1097,7 +1103,7 @@ class TestTelevisionCommands(unittest.TestCase):
         self.assertEqual(result, tfp.PickerResult())
 
     def test_key_without_selection_is_malformed(self):
-        with patch.object(tfp.shutil, "which", return_value="tv"), \
+        with patch.object(tfp, "_television_path", return_value="tv"), \
              patch.object(tfp, "_television_is_supported", return_value=True), \
              patch.object(
                  tfp.subprocess,
@@ -1111,7 +1117,7 @@ class TestTelevisionCommands(unittest.TestCase):
         error.assert_called_once_with("Television returned an invalid selection")
 
     def test_selection_must_have_been_offered(self):
-        with patch.object(tfp.shutil, "which", return_value="tv"), \
+        with patch.object(tfp, "_television_path", return_value="tv"), \
              patch.object(tfp, "_television_is_supported", return_value=True), \
              patch.object(
                  tfp.subprocess,
@@ -1128,7 +1134,7 @@ class TestTelevisionCommands(unittest.TestCase):
         error.assert_called_once_with("Television returned an unknown selection")
 
     def test_nonzero_television_status_reports_failure(self):
-        with patch.object(tfp.shutil, "which", return_value="tv"), \
+        with patch.object(tfp, "_television_path", return_value="tv"), \
              patch.object(tfp, "_television_is_supported", return_value=True), \
              patch.object(
                  tfp.subprocess,
@@ -1142,7 +1148,7 @@ class TestTelevisionCommands(unittest.TestCase):
         error.assert_called_once_with("Television failed with status 1")
 
     def test_rejects_old_television(self):
-        with patch.object(tfp.shutil, "which", return_value="tv"), \
+        with patch.object(tfp, "_television_path", return_value="tv"), \
              patch.object(tfp, "_television_is_supported", return_value=False), \
              patch.object(tfp, "_picker_error") as error, \
              self.assertRaises(SystemExit) as raised:
