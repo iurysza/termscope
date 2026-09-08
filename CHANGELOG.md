@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/iurysza/termscope/compare/v0.3.0...v0.3.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* find Homebrew Television in Herdr panes ([472e53a](https://github.com/iurysza/termscope/commit/472e53ac5f52a03d15fc86e732334dfb8d5b5035))
+* **pick:** match repo paths only at path boundaries ([#6](https://github.com/iurysza/termscope/issues/6)) ([eeca533](https://github.com/iurysza/termscope/commit/eeca533af6951a11bbf5868308ed882f40dc62e8))
+
 ## [0.3.0](https://github.com/iurysza/termscope/compare/v0.2.0...v0.3.0) (2026-08-19)
 
 
