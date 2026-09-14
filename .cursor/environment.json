@@ -1,0 +1,4 @@
+{
+  "name": "termscope",
+  "install": "bash .cursor/install.sh"
+}
