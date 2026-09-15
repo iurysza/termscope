@@ -48,43 +48,73 @@ Termscope stays conservative:
 
 ## Requirements
 
-- [Herdr](https://herdr.dev) `>= 0.7.4` or tmux
-- Python `>= 3.10`
-- [`fd`](https://github.com/sharkdp/fd)
-- [Homebrew](https://brew.sh) when a Herdr plugin install needs to add or upgrade Television
-- [Television](https://alexpasmantier.github.io/television/) `>= 0.15` (provisioned automatically when needed)
-- [`bat`](https://github.com/sharkdp/bat) is optional for syntax-highlighted previews
-- `nvim` for the default file-open action
-- `open` on macOS or `xdg-open` on Linux for default-app opens
+You must already have these on `PATH`. Plugin install does not install them.
 
-Native Windows is not claimed yet. WSL may work through `wslview` when your WSL
+- `python3` 3.10+ (the plugin and shebang call `python3`, not `python`)
+- [`fd`](https://github.com/sharkdp/fd) as the `fd` binary. Debian/Ubuntu `apt install fd-find` ships `fdfind`; symlink it to `fd` (a shell alias is not enough).
+- `nvim` for the default file-open action
+- a URL/default-app opener: `open` on macOS, `xdg-open` on Linux, `wslview` on WSL
+
+Host — pick one:
+
+- [Herdr](https://herdr.dev) `>= 0.7.4` for the plugin
+- tmux for the standalone `termscope` script
+
+Picker UI:
+
+- [Television](https://alexpasmantier.github.io/television/) `>= 0.15` (`tv` on `PATH`). `herdr plugin install` and `./scripts/install-dependencies.sh` install or upgrade it through Homebrew when needed.
+- [Homebrew](https://brew.sh) only if `tv` is missing or older than `0.15`. The installer never installs Homebrew; without it, and without a new enough `tv`, install aborts before the plugin is registered.
+- [`bat`](https://github.com/sharkdp/bat) optional for syntax-highlighted file previews
+
+Native Windows is not claimed. WSL may work through `wslview` when your WSL
 environment provides it.
 
-## Install as a Herdr plugin
+## Install
+
+### Herdr plugin
 
 ```bash
 herdr plugin install iurysza/termscope
 ```
 
-The install includes a visible build step that installs or upgrades Television
-through Homebrew when `tv` is missing or older than `0.15`. It never installs
-Homebrew itself; a missing Homebrew installation aborts cleanly before the
-plugin is registered.
+Pin a release tag with `--ref vX.Y.Z`.
 
-For local development (`plugin link` does not run install-time build steps):
+Herdr clones the repo, then runs `scripts/install-dependencies.sh` before
+registering the plugin. That script:
+
+1. exits 0 if `tv` already reports Television 0.15+
+2. otherwise `brew install` / `brew upgrade` the `television` formula
+3. exits 1 (plugin not registered) if Homebrew is missing or `tv` is still too old
+
+It does not install `python3`, `fd`, `nvim`, `bat`, or Homebrew.
+
+Confirm the actions exist:
+
+```bash
+herdr plugin action list --plugin termscope
+```
+
+You should see `open` and `open-links`. The install does not bind keys; add the
+bindings below and reload config.
+
+### Local Herdr checkout
+
+`herdr plugin link` skips install-time build commands, so provision Television
+yourself:
 
 ```bash
 git clone https://github.com/iurysza/termscope.git
 cd termscope
 ./scripts/install-dependencies.sh
 herdr plugin link "$PWD"
-```
-
-Verify Herdr sees the actions:
-
-```bash
 herdr plugin action list --plugin termscope
 ```
+
+### tmux
+
+Clone this repo, run `./scripts/install-dependencies.sh` (or install Television
+0.15+ another way), and keep `python3`, `fd`, and `nvim` on `PATH`. Point tmux
+at the `termscope` script in that clone — see [tmux usage](#tmux-usage).
 
 ## Bind keys in Herdr
 
@@ -113,34 +143,48 @@ herdr server reload-config
 
 ## Use it
 
+`termscope.open` captures the **visible** text of every pane in the current
+Herdr tab or tmux window, indexes the git worktree with `fd` (pane cwd if git
+is missing or you are not in a repo), and opens a Television popup of matching
+paths plus any visible `http://` / `https://` URLs.
+
+- A path is listed only if it exists on disk in that tree. `file:line` is kept
+  and passed to Neovim as `nvim +line path`.
+- If no visible file matches, the picker falls back to the full repo listing
+  (visible URLs stay first). Indexing `$HOME` is skipped.
+- `termscope.open-links` is URLs only.
+
+With the bindings above:
+
 | Key | Action |
 | --- | --- |
-| `Ctrl-Shift-A` | Open visible file picker |
-| `Ctrl-E` | Open visible link picker |
+| `Ctrl-Shift-A` | `termscope.open` — file picker (URLs included after files) |
+| `Ctrl-E` | `termscope.open-links` — URL picker |
 
-File picker controls:
+File picker (Television):
 
 | Key | Action |
 | --- | --- |
 | `Enter` | Open in a new Neovim split beside the source pane |
 | `Ctrl-O` | Open with the default app |
 | `Ctrl-Y` | Agent pane: send `/plannotator-annotate <file>`; shell pane: run `plannotator annotate <file>` |
-| `Ctrl-S` | Toggle appearance order / alphabetical sort |
+| `Ctrl-S` | Cycle appearance order / alphabetical sort |
 
-Visible URLs are listed after the files. On a URL row, `Enter`/`Ctrl-O` open it
-with the default opener and `Ctrl-Y` copies it.
+On a URL row, `Enter` / `Ctrl-O` open it with the default opener and `Ctrl-Y`
+copies it (`pbcopy`; no-op if `pbcopy` is missing).
 
-Link picker controls:
+Link picker:
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Open URL in the browser/default opener |
-| `Ctrl-Y` | Copy URL to clipboard |
-| `Ctrl-S` | Toggle appearance order / alphabetical sort |
+| `Enter` | Open URL with the default opener |
+| `Ctrl-Y` | Copy URL (`pbcopy`; no-op if `pbcopy` is missing) |
+| `Ctrl-S` | Cycle appearance order / alphabetical sort |
 
 ## tmux usage
 
-Herdr is the main plugin target, but the same picker works in tmux.
+After the [tmux install](#tmux) steps, set `@termscope` to the absolute path of
+the `termscope` script in your clone (not the repo directory).
 
 ```tmux
 set -g @termscope "/path/to/termscope/termscope"
@@ -157,16 +201,19 @@ bind-key -T copy-mode-vi P run-shell "tmux display-popup -E -w 80% -h 60% '#{@te
 ```
 
 In tmux copy-mode these bindings preserve the scrolled viewport instead of
-jumping back to the live bottom of the pane.
+jumping back to the live bottom of the pane. Reload tmux config after editing
+(`tmux source-file ~/.tmux.conf`, or your config path).
+
+The script also accepts `--multiplexer tmux|herdr|auto` (default `auto`).
 
 ## Configuration
 
 | Environment variable | Purpose |
 | --- | --- |
 | `TERMSCOPE_OPENER` | Override default opener, e.g. `open -a Zen` or `open -a Firefox` |
-| `TERMSCOPE_SORT` | Default sort mode: `appearance` or `alpha` |
-| `TERMSCOPE_LOG` | Path to the JSON event log |
-| `TERMSCOPE_DEBUG_DIR` | Directory for per-run debug dumps |
+| `TERMSCOPE_SORT` | Default sort: `appearance` (default) or `alpha` |
+| `TERMSCOPE_LOG` | JSON event log path. Default: `$XDG_CACHE_HOME/termscope/termscope.log` (`~/.cache/...` if unset) |
+| `TERMSCOPE_DEBUG_DIR` | Directory for per-run debug dumps (unset = off) |
 
 Examples:
 
@@ -175,12 +222,20 @@ export TERMSCOPE_OPENER='open -a Zen'
 export TERMSCOPE_SORT=alpha
 ```
 
+Put these in the environment of the Herdr server / tmux session that launches
+the picker, not only an unrelated interactive shell.
+
 ## Dry run / debug
 
-See what the scanner would offer without opening Television:
+`scan` prints JSON of visible **file** candidates (no URLs, no Television). It
+needs a real pane id:
 
 ```bash
+# inside a Herdr pane
 ./termscope scan --pane-path "$PWD" --pane-id "$HERDR_PANE_ID" --multiplexer herdr
+
+# tmux
+./termscope scan --pane-path "$PWD" --pane-id "$(tmux display-message -p '#{pane_id}')" --multiplexer tmux
 ```
 
 Enable debug dumps:
@@ -189,15 +244,16 @@ Enable debug dumps:
 export TERMSCOPE_DEBUG_DIR=/tmp/termscope-debug
 ```
 
-Each run writes the captured screen, indexed files, candidates, and final
-selection decision.
+Each run writes the captured screen, indexed files, candidates, picker result,
+and final selection decision.
 
 ## How it works
 
 Herdr plugin actions run without a TTY, so `termscope.open` first opens an
 `80% × 60%` session-modal popup. The popup inherits the source pane id/cwd,
-captures visible text with `herdr pane read --source visible`, scans the repo
-with `fd`, and runs Television. Two bundled channels let `Ctrl-S` cycle between
+captures visible text from every pane in the tab with
+`herdr pane read --source visible`, scans the repo with `fd`, and runs
+Television. Two bundled channels let `Ctrl-S` cycle between
 appearance and alphabetical order. File previews use `bat` when available and a
 built-in text preview otherwise.
 
@@ -219,8 +275,9 @@ herdr plugin link "$PWD"
 herdr plugin action invoke termscope.open
 ```
 
-The repo intentionally has no package manager or build step. Herdr installs it
-by cloning the repo and reading `herdr-plugin.toml`.
+There is no package manager. `herdr plugin install` clones the repo, reads
+`herdr-plugin.toml`, and runs `scripts/install-dependencies.sh`. `plugin link`
+does not run that script.
 
 ## License
 
