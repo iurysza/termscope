@@ -62,7 +62,7 @@ Host — pick one:
 
 Picker UI:
 
-- [Television](https://alexpasmantier.github.io/television/) `>= 0.15` (`tv` on `PATH`). `herdr plugin install` and `./scripts/install-dependencies.sh` install or upgrade it through Homebrew when needed.
+- [Television](https://alexpasmantier.github.io/television/) `>= 0.15` (`tv`). `herdr plugin install` and `./scripts/install-dependencies.sh` install or upgrade it through Homebrew when needed. Herdr popups often omit Homebrew from `PATH`; Termscope records the absolute `tv` path at install and also looks in `/opt/homebrew/bin` and `/usr/local/bin`.
 - [Homebrew](https://brew.sh) only if `tv` is missing or older than `0.15`. The installer never installs Homebrew; without it, and without a new enough `tv`, install aborts before the plugin is registered.
 - [`bat`](https://github.com/sharkdp/bat) optional for syntax-highlighted file previews
 
@@ -84,9 +84,12 @@ registering the plugin. That script:
 
 1. exits 0 if `tv` already reports Television 0.15+
 2. otherwise `brew install` / `brew upgrade` the `television` formula
-3. exits 1 (plugin not registered) if Homebrew is missing or `tv` is still too old
+3. writes the absolute `tv` path to `$XDG_CONFIG_HOME/termscope/television.path` (`~/.config/termscope/television.path` when `XDG_CONFIG_HOME` is unset)
+4. exits 1 (plugin not registered) if Homebrew is missing or `tv` is still too old
 
-It does not install `python3`, `fd`, `nvim`, `bat`, or Homebrew.
+It finds `tv` and `brew` on `PATH` and in `/opt/homebrew/bin` and
+`/usr/local/bin`, so a Herdr install that omits Homebrew from `PATH` still
+works. It does not install `python3`, `fd`, `nvim`, `bat`, or Homebrew.
 
 Confirm the actions exist:
 
@@ -210,6 +213,7 @@ The script also accepts `--multiplexer tmux|herdr|auto` (default `auto`).
 
 | Environment variable | Purpose |
 | --- | --- |
+| `TERMSCOPE_TV` | Absolute Television binary. Set by the Herdr wrapper when the installer recorded a path or Homebrew `tv` exists off `PATH`. |
 | `TERMSCOPE_OPENER` | Override default opener, e.g. `open -a Zen` or `open -a Firefox` |
 | `TERMSCOPE_SORT` | Default sort: `appearance` (default) or `alpha` |
 | `TERMSCOPE_LOG` | JSON event log path. Default: `$XDG_CACHE_HOME/termscope/termscope.log` (`~/.cache/...` if unset) |
@@ -250,7 +254,8 @@ and final selection decision.
 ## How it works
 
 Herdr plugin actions run without a TTY, so `termscope.open` first opens an
-`80% × 60%` session-modal popup. The popup inherits the source pane id/cwd,
+`80% × 60%` session-modal popup. The popup inherits the source pane id/cwd and
+an absolute Television path when Homebrew `tv` is off the popup `PATH`. It
 captures visible text from every pane in the tab with
 `herdr pane read --source visible`, scans the repo with `fd`, and runs
 Television. Two bundled channels let `Ctrl-S` cycle between

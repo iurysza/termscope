@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -968,10 +969,81 @@ class TestSortEnvVar(unittest.TestCase):
 
 class TestTelevisionCommands(unittest.TestCase):
     def test_homebrew_television_is_found_without_homebrew_on_path(self):
-        with patch.object(tfp.shutil, "which", return_value=None), \
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": "/tmp/termscope-missing-config"}, clear=False), \
+             patch.object(tfp.shutil, "which", return_value=None), \
              patch.object(tfp.os.path, "isfile", side_effect=lambda path: path == "/opt/homebrew/bin/tv"), \
              patch.object(tfp.os, "access", return_value=True):
             self.assertEqual(tfp._television_path(), "/opt/homebrew/bin/tv")
+
+    def test_usr_local_television_is_found_without_homebrew_on_path(self):
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": "/tmp/termscope-missing-config"}, clear=False), \
+             patch.object(tfp.shutil, "which", return_value=None), \
+             patch.object(tfp.os.path, "isfile", side_effect=lambda path: path == "/usr/local/bin/tv"), \
+             patch.object(tfp.os, "access", return_value=True):
+            self.assertEqual(tfp._television_path(), "/usr/local/bin/tv")
+
+    def test_termscope_tv_env_wins_over_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            configured = Path(tmp) / "configured-tv"
+            configured.write_text("#!/bin/sh\n")
+            configured.chmod(0o755)
+            with patch.dict(os.environ, {"TERMSCOPE_TV": str(configured)}, clear=False), \
+                 patch.object(tfp.shutil, "which", return_value="/usr/bin/tv"):
+                self.assertEqual(tfp._television_path(), str(configured))
+
+    def test_recorded_install_path_is_used_when_path_omits_tv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_home = Path(tmp) / "config"
+            recorded_tv = Path(tmp) / "opt" / "homebrew" / "bin" / "tv"
+            recorded_tv.parent.mkdir(parents=True)
+            recorded_tv.write_text("#!/bin/sh\n")
+            recorded_tv.chmod(0o755)
+            path_file = config_home / "termscope" / "television.path"
+            path_file.parent.mkdir(parents=True)
+            path_file.write_text(f"{recorded_tv}\n")
+            env = {
+                "XDG_CONFIG_HOME": str(config_home),
+                "PATH": "/usr/bin:/bin",
+            }
+            with patch.dict(os.environ, env, clear=False), \
+                 patch.object(tfp.shutil, "which", return_value=None):
+                os.environ.pop("TERMSCOPE_TV", None)
+                self.assertEqual(tfp._television_path(), str(recorded_tv))
+
+    def test_homebrew_prefix_television_is_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = Path(tmp) / "homebrew"
+            tv = prefix / "bin" / "tv"
+            tv.parent.mkdir(parents=True)
+            tv.write_text("#!/bin/sh\n")
+            tv.chmod(0o755)
+            env = {
+                "HOMEBREW_PREFIX": str(prefix),
+                "XDG_CONFIG_HOME": str(Path(tmp) / "missing-config"),
+                "PATH": "/home/user/.opencode/bin:/home/user/.pi/bin:/home/user/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            }
+            with patch.dict(os.environ, env, clear=False), \
+                 patch.object(tfp.shutil, "which", return_value=None):
+                os.environ.pop("TERMSCOPE_TV", None)
+                self.assertEqual(tfp._television_path(), str(tv))
+
+    def test_picker_puts_television_directory_on_path(self):
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["path"] = kwargs["env"]["PATH"]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"{tfp.encode_candidate('a.py')}\n",
+            )
+
+        with patch.object(tfp, "_television_path", return_value="/opt/homebrew/bin/tv"), \
+             patch.object(tfp, "_television_is_supported", return_value=True), \
+             patch.object(tfp.subprocess, "run", side_effect=fake_run), \
+             patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
+            tfp.run_tv_visible(["a.py"], Path("/tmp"))
+
+        self.assertTrue(captured["path"].startswith("/opt/homebrew/bin"))
 
     def test_home_path_is_shortened_for_picker_header(self):
         self.assertEqual(tfp.display_path(Path.home() / "projects"), "~/projects")

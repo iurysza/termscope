@@ -13,6 +13,8 @@ import os
 import subprocess
 import sys
 
+_HOMEBREW_TV_PATHS = ("/opt/homebrew/bin/tv", "/usr/local/bin/tv")
+
 
 def herdr_bin() -> str:
     return os.environ.get("HERDR_BIN_PATH", "herdr")
@@ -24,6 +26,39 @@ def plugin_id() -> str:
 
 def plugin_root() -> str:
     return os.environ.get("HERDR_PLUGIN_ROOT", os.getcwd())
+
+
+def _is_executable(path: str) -> bool:
+    return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def television_bin() -> str | None:
+    """Resolve Television without relying on a Herdr popup PATH."""
+    env_path = os.environ.get("TERMSCOPE_TV", "").strip()
+    if env_path and _is_executable(env_path):
+        return env_path
+
+    config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    recorded_file = os.path.join(config_home, "termscope", "television.path")
+    try:
+        with open(recorded_file, encoding="utf-8") as handle:
+            recorded = handle.read().strip()
+    except OSError:
+        recorded = ""
+    if _is_executable(recorded):
+        return recorded
+
+    prefix = os.environ.get("HOMEBREW_PREFIX", "").strip()
+    candidates = []
+    if prefix:
+        candidates.append(os.path.join(prefix, "bin", "tv"))
+    candidates.extend(_HOMEBREW_TV_PATHS)
+    for candidate in candidates:
+        if _is_executable(candidate):
+            return candidate
+    return None
 
 
 def get_source_pane() -> tuple[str, str, str]:
@@ -57,25 +92,29 @@ def get_source_pane() -> tuple[str, str, str]:
 
 def open_popup(entrypoint: str) -> None:
     pane_id, cwd, agent = get_source_pane()
+    command = [
+        herdr_bin(),
+        "plugin",
+        "pane",
+        "open",
+        "--plugin",
+        plugin_id(),
+        "--entrypoint",
+        entrypoint,
+        "--placement",
+        "popup",
+        "--env",
+        f"SOURCE_PANE_ID={pane_id}",
+        "--env",
+        f"SOURCE_PANE_CWD={cwd}",
+        "--env",
+        f"SOURCE_PANE_AGENT={agent}",
+    ]
+    television = television_bin()
+    if television:
+        command.extend(["--env", f"TERMSCOPE_TV={television}"])
     result = subprocess.run(
-        [
-            herdr_bin(),
-            "plugin",
-            "pane",
-            "open",
-            "--plugin",
-            plugin_id(),
-            "--entrypoint",
-            entrypoint,
-            "--placement",
-            "popup",
-            "--env",
-            f"SOURCE_PANE_ID={pane_id}",
-            "--env",
-            f"SOURCE_PANE_CWD={cwd}",
-            "--env",
-            f"SOURCE_PANE_AGENT={agent}",
-        ],
+        command,
         text=True,
         capture_output=True,
         check=False,

@@ -57,6 +57,7 @@ On a clean machine or temporary user profile, start with Television absent or ol
 herdr --version  # 0.7.4+
 herdr plugin install iurysza/termscope --ref vX.Y.Z
 tv --version     # now 0.15+
+cat "${XDG_CONFIG_HOME:-$HOME/.config}/termscope/television.path"
 herdr plugin action list --plugin termscope
 ```
 

@@ -869,11 +869,54 @@ def _picker_error(message: str) -> None:
         )
 
 
+_HOMEBREW_TV_PATHS = ("/opt/homebrew/bin/tv", "/usr/local/bin/tv")
+_TELEVISION_PATH_FILE = "television.path"
+
+
+def _is_executable(path: str) -> bool:
+    return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _television_path_file() -> Path:
+    config_home = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(config_home) / "termscope" / _TELEVISION_PATH_FILE
+
+
+def _recorded_television_path() -> str | None:
+    try:
+        recorded = _television_path_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return recorded or None
+
+
+def _television_candidates() -> list[str]:
+    """Absolute Television paths that do not depend on an interactive shell PATH."""
+    candidates: list[str] = []
+    env_path = os.environ.get("TERMSCOPE_TV", "").strip()
+    if env_path:
+        candidates.append(env_path)
+    recorded = _recorded_television_path()
+    if recorded:
+        candidates.append(recorded)
+    which = shutil.which("tv")
+    if which:
+        candidates.append(which)
+    prefix = os.environ.get("HOMEBREW_PREFIX", "").strip()
+    if prefix:
+        candidates.append(str(Path(prefix) / "bin" / "tv"))
+    candidates.extend(_HOMEBREW_TV_PATHS)
+    return candidates
+
+
 def _television_path() -> str | None:
-    """Find Television when Herdr's plugin PATH omits Homebrew."""
-    candidates = [shutil.which("tv"), "/opt/homebrew/bin/tv", "/usr/local/bin/tv"]
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+    """Find Television when Herdr's popup PATH omits Homebrew."""
+    seen: set[str] = set()
+    for candidate in _television_candidates():
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if _is_executable(candidate):
             return candidate
     return None
 
@@ -924,6 +967,12 @@ def _run_tv(
         _write_candidate_file(alpha_path, sorted(input_lines, key=str.lower))
 
         env = os.environ.copy()
+        television_path = Path(television)
+        if television_path.is_absolute():
+            tv_dir = str(television_path.resolve().parent)
+            path_parts = [part for part in env.get("PATH", "").split(os.pathsep) if part]
+            if tv_dir not in path_parts:
+                env["PATH"] = os.pathsep.join([tv_dir, *path_parts]) if path_parts else tv_dir
         env.update(
             {
                 "TERMSCOPE_APPEARANCE_CANDIDATES": str(appearance_path),
