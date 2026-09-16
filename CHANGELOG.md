@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/iurysza/termscope/compare/v0.3.1...v0.3.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* resolve Homebrew Television in Herdr popups ([#13](https://github.com/iurysza/termscope/issues/13)) ([c618f44](https://github.com/iurysza/termscope/commit/c618f4443795a1422b5c684441452778f47e64d7)), closes [#12](https://github.com/iurysza/termscope/issues/12)
+
 ## [0.3.1](https://github.com/iurysza/termscope/compare/v0.3.0...v0.3.1) (2026-09-08)
 
 
