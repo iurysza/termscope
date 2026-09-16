@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -90,6 +91,53 @@ class TestHerdrWrapper(unittest.TestCase):
         self.assertIn("SOURCE_PANE_CWD=/tmp/repo", command)
         self.assertIn("SOURCE_PANE_AGENT=pi", command)
         self.assertTrue(run.call_args_list[1].kwargs["capture_output"])
+
+    def test_popup_receives_recorded_television_path(self):
+        pane = json.dumps({"result": {"pane": {"cwd": "/tmp/repo"}}})
+        responses = [
+            SimpleNamespace(returncode=0, stdout=pane, stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            recorded_tv = Path(tmp) / "tv"
+            recorded_tv.write_text("#!/bin/sh\n")
+            recorded_tv.chmod(0o755)
+            config_home = Path(tmp) / "config"
+            path_file = config_home / "termscope" / "television.path"
+            path_file.parent.mkdir(parents=True)
+            path_file.write_text(f"{recorded_tv}\n")
+            env = {
+                "HERDR_PANE_ID": "1-1",
+                "HERDR_BIN_PATH": "/tmp/herdr",
+                "HERDR_PLUGIN_ID": "termscope",
+                "XDG_CONFIG_HOME": str(config_home),
+            }
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(wrapper.subprocess, "run", side_effect=responses) as run:
+                wrapper.open_popup("picker")
+
+        command = run.call_args_list[1].args[0]
+        self.assertIn(f"TERMSCOPE_TV={recorded_tv}", command)
+
+    def test_popup_passes_homebrew_television_without_path(self):
+        pane = json.dumps({"result": {"pane": {"cwd": "/tmp/repo"}}})
+        responses = [
+            SimpleNamespace(returncode=0, stdout=pane, stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ]
+        env = {
+            "HERDR_PANE_ID": "1-1",
+            "HERDR_BIN_PATH": "/tmp/herdr",
+            "HERDR_PLUGIN_ID": "termscope",
+            "XDG_CONFIG_HOME": "/tmp/termscope-missing-config",
+        }
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(wrapper, "_is_executable", side_effect=lambda path: path == "/opt/homebrew/bin/tv"), \
+             patch.object(wrapper.subprocess, "run", side_effect=responses) as run:
+            wrapper.open_popup("picker")
+
+        command = run.call_args_list[1].args[0]
+        self.assertIn("TERMSCOPE_TV=/opt/homebrew/bin/tv", command)
 
     def test_popup_launch_failure_is_propagated(self):
         pane = json.dumps({"result": {"pane": {"cwd": "/tmp/repo"}}})
