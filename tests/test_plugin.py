@@ -6,15 +6,11 @@ import json
 import os
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
 
 ROOT = Path(__file__).parent.parent
 spec = importlib.util.spec_from_file_location("termscope_herdr", ROOT / "termscope_herdr.py")

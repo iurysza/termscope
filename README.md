@@ -50,7 +50,7 @@ Termscope stays conservative:
 
 You must already have these on `PATH`. Plugin install does not install them.
 
-- `python3` 3.10+ (the plugin and shebang call `python3`, not `python`)
+- `python3` 3.11+ (the plugin and shebang call `python3`, not `python`)
 - [`fd`](https://github.com/sharkdp/fd) as the `fd` binary. Debian/Ubuntu `apt install fd-find` ships `fdfind`; symlink it to `fd` (a shell alias is not enough).
 - `nvim` for the default file-open action
 - a URL/default-app opener: `open` on macOS, `xdg-open` on Linux, `wslview` on WSL

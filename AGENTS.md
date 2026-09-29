@@ -41,9 +41,9 @@ Then run the `Validate Herdr manifest` Python in `.github/workflows/ci.yml`. Tha
 - popup panes `picker` and `link-picker` at 80% by 60%
 - `cable/termscope-*.toml` source command length 2, `no_sort` true, frecency false
 
-On Python 3.10, install `tomli` first (`python3 -m pip install tomli`). Python 3.11 and later have `tomllib`.
+Manifest checks use stdlib `tomllib` (Python 3.11+).
 
-CI matrix: Python 3.10 and 3.12 on Ubuntu; Python 3.12 on macOS.
+CI matrix: Python 3.11 and 3.12 on Ubuntu; Python 3.12 on macOS.
 
 Optional Herdr smoke (not in CI; needs Herdr on `PATH`):
 
