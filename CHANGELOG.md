@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0](https://github.com/iurysza/termscope/compare/v0.3.3...v1.0.0) (2026-09-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* require Python 3.11
+
+### Features
+
+* add plugin config for open target and close-on-exit ([e4d442c](https://github.com/iurysza/termscope/commit/e4d442caaf877af74dca5ea1a338cfff9f5ebd6c))
+* require Python 3.11 ([612ce37](https://github.com/iurysza/termscope/commit/612ce37bd826f23364cc399176275ed3fdc2c17b))
+
 ## [0.3.3](https://github.com/iurysza/termscope/compare/v0.3.2...v0.3.3) (2026-09-28)
 
 
