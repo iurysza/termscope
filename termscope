@@ -262,6 +262,29 @@ class TmuxBackend(MultiplexerBackend):
         )
 
 
+def open_settings() -> dict:
+    """Open-behavior settings from the Herdr plugin config directory."""
+    settings: dict = {"open_target": "split", "close_on_exit": False}
+
+    config_dir = os.environ.get("HERDR_PLUGIN_CONFIG_DIR", "")
+    config_path = Path(config_dir) / "config.toml" if config_dir else None
+    if config_path and config_path.is_file():
+        try:
+            import tomllib
+
+            with config_path.open("rb") as fh:
+                data = tomllib.load(fh)
+            if data.get("open_target") in ("split", "tab"):
+                settings["open_target"] = data["open_target"]
+            if isinstance(data.get("close_on_exit"), bool):
+                settings["close_on_exit"] = data["close_on_exit"]
+        except (ModuleNotFoundError, OSError, ValueError):
+            pass
+
+    log_event("open_settings", **settings)
+    return settings
+
+
 class HerdrBackend(MultiplexerBackend):
     @property
     def name(self) -> str:
@@ -335,25 +358,38 @@ class HerdrBackend(MultiplexerBackend):
     def open_in_nvim_split(
         self, path: Path, line: str, pane_path: Path, pane_id: str
     ) -> NoReturn:
+        settings = open_settings()
         herdr = self._herdr_bin()
+
+        if settings["open_target"] == "tab":
+            subcommand = ["tab", "create", "--cwd", str(pane_path), "--focus"]
+            pane_key = "root_pane"
+        else:
+            subcommand = ["pane", "split", pane_id, "--direction", "right", "--cwd", str(pane_path)]
+            pane_key = "pane"
+
+        label = f"herdr {' '.join(subcommand[:2])}"
         result = subprocess.run(
-            [herdr, "pane", "split", pane_id, "--direction", "right", "--cwd", str(pane_path)],
+            [herdr, *subcommand],
             text=True,
             capture_output=True,
             check=False,
         )
         if result.returncode != 0:
-            print(f"termscope: herdr pane split failed: {result.stderr}", file=sys.stderr)
+            print(f"termscope: {label} failed: {result.stderr}", file=sys.stderr)
             sys.exit(1)
 
         try:
             data = json.loads(result.stdout)
-            new_pane_id = data["result"]["pane"]["pane_id"]
+            new_pane_id = data["result"][pane_key]["pane_id"]
         except (json.JSONDecodeError, KeyError) as exc:
-            print(f"termscope: could not parse herdr split response: {exc}", file=sys.stderr)
+            print(f"termscope: could not parse {label} response: {exc}", file=sys.stderr)
             sys.exit(1)
 
         nvim_cmd = f"nvim +{line} {shlex.quote(str(path))}" if line else f"nvim {shlex.quote(str(path))}"
+        if settings["close_on_exit"]:
+            # exec replaces the pane shell so the pane closes when nvim exits
+            nvim_cmd = f"exec {nvim_cmd}"
         subprocess.run(
             [herdr, "pane", "run", new_pane_id, nvim_cmd],
             check=False,

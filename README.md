@@ -175,7 +175,7 @@ File picker (Television):
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Open in a new Neovim split beside the source pane |
+| `Enter` | Open in a new Neovim split beside the source pane or on a new tab |
 | `Ctrl-O` | Open with the default app |
 | `Ctrl-Y` | Agent pane: send `/plannotator-annotate <file>`; shell pane: run `plannotator annotate <file>` |
 | `Ctrl-S` | Cycle appearance order / alphabetical sort |
@@ -217,6 +217,21 @@ jumping back to the live bottom of the pane. Reload tmux config after editing
 The script also accepts `--multiplexer tmux|herdr|auto` (default `auto`).
 
 ## Configuration
+
+When running as a Herdr plugin, Termscope reads settings from
+`config.toml` in the plugin config directory, which
+`herdr plugin config-dir termscope` prints. If the file is missing, Termscope
+uses the defaults below.
+
+| Setting | Values | Default | Purpose |
+| --- | --- | --- | --- |
+| `open_target` | `split`, `tab` | `split` | `split` opens the file beside the source pane; `tab` opens it in a new tab. |
+| `close_on_exit` | `true`, `false` | `false` | `true` launches nvim with `exec`, so the pane closes when nvim exits. |
+
+```toml
+open_target = "tab"
+close_on_exit = true
+```
 
 | Environment variable | Purpose |
 | --- | --- |
@@ -269,9 +284,11 @@ Television. Two bundled channels let `Ctrl-S` cycle between
 appearance and alphabetical order. File previews use `bat` when available and a
 built-in text preview otherwise.
 
-When you choose a file, Termscope asks Herdr to split beside the source pane and
-runs `nvim +line path`. For URLs, it uses the default opener unless
-`TERMSCOPE_OPENER` is set.
+When you choose a file, Termscope opens a split beside the source pane, or a
+new tab with `open_target = "tab"`, and runs `nvim +line path` in it. With
+`close_on_exit = true`, Termscope launches nvim with `exec`, so the pane closes
+when nvim exits. For URLs, it uses the default opener unless `TERMSCOPE_OPENER`
+is set.
 
 ## Project documentation
 
