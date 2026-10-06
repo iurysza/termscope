@@ -1,0 +1,77 @@
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# main has no required status checks. A pull request with only pending,
+# non-required checks is already mergeable, so `gh pr merge --auto` would
+# squash-merge it before CI finishes. Wait for this head SHA's CI run.
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip semver-major updates
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        run: echo "Semver-major update; leaving the pull request for a human."
+
+      - name: Squash-merge after CI succeeds
+        if: steps.metadata.outputs.update-type != '' && steps.metadata.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          interval=15
+          deadline=$((SECONDS + 55 * 60))
+
+          echo "Waiting for the CI workflow on ${HEAD_SHA}"
+
+          while true; do
+            if (( SECONDS >= deadline )); then
+              echo "Timed out waiting for CI to succeed."
+              exit 1
+            fi
+
+            line=$(gh api "/repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=1" \
+              --jq '.workflow_runs[0] // {} | "\(.status // "missing") \(.conclusion // "pending")"')
+            status=${line%% *}
+            conclusion=${line#* }
+            echo "CI status=${status} conclusion=${conclusion}"
+
+            case "$conclusion" in
+              success)
+                if [[ "$status" == "completed" ]]; then
+                  break
+                fi
+                ;;
+              failure|cancelled|timed_out|action_required|stale|startup_failure|skipped|neutral)
+                echo "CI finished with conclusion ${conclusion}; not merging."
+                exit 1
+                ;;
+            esac
+
+            sleep "$interval"
+          done
+
+          gh pr merge "$PR_URL" --squash --match-head-commit "$HEAD_SHA"
