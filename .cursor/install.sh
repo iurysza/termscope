@@ -67,6 +67,9 @@ else
   sudo install -m 0755 "$tv_bin" /usr/local/bin/tv
 fi
 
+log "Installing agent skills"
+curl -fsSL https://raw.githubusercontent.com/iurysza/agent-skills/main/scripts/bootstrap.sh | bash
+
 # Fast sanity check that the sources still parse under the target interpreter.
 log "Byte-compiling termscope sources"
 python3 -m py_compile termscope termscope_herdr.py
