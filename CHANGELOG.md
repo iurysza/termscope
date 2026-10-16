@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/iurysza/termscope/compare/v1.0.0...v1.0.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* readable file previews: wrap long lines, use terminal colors ([#28](https://github.com/iurysza/termscope/issues/28)) ([0205ce1](https://github.com/iurysza/termscope/commit/0205ce1c713db4528f55f5c40392b18fa0533db2))
+
 ## [1.0.0](https://github.com/iurysza/termscope/compare/v0.3.3...v1.0.0) (2026-09-29)
 
 
