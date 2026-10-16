@@ -1180,6 +1180,7 @@ class TestTelevisionCommands(unittest.TestCase):
         header_index = command.index("--input-header")
         self.assertEqual(command[header_index + 1], "Files — /tmp")
         self.assertNotIn("--no-preview", command)
+        self.assertIn("--preview-word-wrap", command)
 
     def test_alpha_preference_selects_alpha_first_channel(self):
         with patch.object(tfp, "_television_path", return_value="tv"), \
@@ -1212,6 +1213,7 @@ class TestTelevisionCommands(unittest.TestCase):
         self.assertEqual(result.selection, "https://example.com")
         command = run.call_args.args[0]
         self.assertIn("--no-preview", command)
+        self.assertNotIn("--preview-word-wrap", command)
         expect_index = command.index("--expect")
         self.assertEqual(command[expect_index + 1], "ctrl-y")
 
@@ -1389,6 +1391,27 @@ class TestPreviewTarget(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("--line-range", command)
         self.assertIn("1:200", command)
+
+    def test_bat_preview_uses_terminal_colors_unless_bat_theme_is_set(self):
+        root = Path(__file__).parent / "_test_preview_bat_theme"
+        root.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        (root / "main.py").write_text("one\ntwo\n")
+
+        for env, expected in (({}, "--theme=ansi"), ({"BAT_THEME": "Nord"}, "--theme=Nord")):
+            with patch.dict(os.environ, env), \
+                 patch.object(tfp, "find_search_root", return_value=root), \
+                 patch.object(tfp.shutil, "which", return_value="bat"), \
+                 patch.object(
+                     tfp.subprocess,
+                     "run",
+                     return_value=SimpleNamespace(returncode=0, stdout=""),
+                 ) as run:
+                if not env:
+                    os.environ.pop("BAT_THEME", None)
+                tfp.preview_target("main.py", root)
+
+            self.assertIn(expected, run.call_args.args[0])
 
     def test_failed_bat_falls_back_to_python_preview(self):
         import io

@@ -980,7 +980,10 @@ def _run_tv(
         ]
         if expect_keys:
             command.extend(["--expect", ";".join(expect_keys)])
-        if not preview:
+        if preview:
+            # Wrap long lines instead of cutting them off at the right edge.
+            command.append("--preview-word-wrap")
+        else:
             command.append("--no-preview")
         command.append(f"termscope-{sort}")
 
@@ -1307,7 +1310,10 @@ def _render_preview(target_text: str, pane_path: Path) -> None:
         return
     bat = shutil.which("bat") if file_size <= max_bytes else None
     if bat:
-        command = [bat, "--color=always", "--paging=never", "--style=numbers"]
+        # bat's default theme paints plain text white, invisible on a light
+        # terminal; "ansi" uses the terminal's own colors unless BAT_THEME is set.
+        theme = os.environ.get("BAT_THEME") or "ansi"
+        command = [bat, "--color=always", "--paging=never", "--style=numbers", f"--theme={theme}"]
         if line_number:
             start = max(1, line_number - 15)
             end = line_number + 35

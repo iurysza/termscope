@@ -238,6 +238,7 @@ close_on_exit = true
 | `TERMSCOPE_TV` | Absolute Television binary. Set by the Herdr wrapper when the installer recorded a path or Homebrew `tv` exists off `PATH`. |
 | `TERMSCOPE_OPENER` | Override default opener, e.g. `open -a Zen` or `open -a Firefox` |
 | `TERMSCOPE_SORT` | Default sort: `appearance` (default) or `alpha` |
+| `BAT_THEME` | `bat` theme for file previews. Default: `ansi`, the terminal's own colors, so text stays readable on light and dark themes |
 | `TERMSCOPE_LOG` | JSON event log path. Default: `$XDG_CACHE_HOME/termscope/termscope.log` (`~/.cache/...` if unset) |
 | `TERMSCOPE_DEBUG_DIR` | Directory for per-run debug dumps (unset = off) |
 
