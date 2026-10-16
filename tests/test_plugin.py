@@ -33,10 +33,10 @@ class TestManifest(unittest.TestCase):
             }],
         )
         self.assertEqual({pane["id"] for pane in manifest["panes"]}, {"picker", "link-picker"})
+        sizes = {"picker": ("95%", "90%"), "link-picker": ("80%", "60%")}
         for pane in manifest["panes"]:
             self.assertEqual(pane["placement"], "popup")
-            self.assertEqual(pane["width"], "80%")
-            self.assertEqual(pane["height"], "60%")
+            self.assertEqual((pane["width"], pane["height"]), sizes[pane["id"]])
 
     def test_television_channels_preserve_both_orders(self):
         appearance = tomllib.loads((ROOT / "cable" / "termscope-appearance.toml").read_text())

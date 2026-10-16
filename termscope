@@ -262,6 +262,10 @@ class TmuxBackend(MultiplexerBackend):
         )
 
 
+def _has_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def open_settings() -> dict:
     """Open-behavior settings from the Herdr plugin config directory."""
     settings: dict = {"open_target": "split", "close_on_exit": False}
@@ -274,7 +278,7 @@ def open_settings() -> dict:
 
             with config_path.open("rb") as fh:
                 data = tomllib.load(fh)
-            if data.get("open_target") in ("split", "tab"):
+            if data.get("open_target") in ("split", "tab", "popup"):
                 settings["open_target"] = data["open_target"]
             if isinstance(data.get("close_on_exit"), bool):
                 settings["close_on_exit"] = data["close_on_exit"]
@@ -360,6 +364,14 @@ class HerdrBackend(MultiplexerBackend):
     ) -> NoReturn:
         settings = open_settings()
         herdr = self._herdr_bin()
+
+        if settings["open_target"] == "popup" and _has_terminal():
+            # The picker already runs in a Herdr popup: replace it with nvim, so
+            # the file opens in that popup and the popup closes when nvim exits.
+            # Without a terminal (CLI use), fall through to a split.
+            os.chdir(pane_path)
+            argv = ["nvim", f"+{line}", str(path)] if line else ["nvim", str(path)]
+            os.execvp(argv[0], argv)
 
         if settings["open_target"] == "tab":
             subcommand = ["tab", "create", "--cwd", str(pane_path), "--focus"]

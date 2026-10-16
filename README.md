@@ -225,7 +225,7 @@ uses the defaults below.
 
 | Setting | Values | Default | Purpose |
 | --- | --- | --- | --- |
-| `open_target` | `split`, `tab` | `split` | `split` opens the file beside the source pane; `tab` opens it in a new tab. |
+| `open_target` | `split`, `tab`, `popup` | `split` | `split` opens the file beside the source pane; `tab` opens it in a new tab; `popup` opens it inside the picker popup, which closes when nvim exits. |
 | `close_on_exit` | `true`, `false` | `false` | `true` launches nvim with `exec`, so the pane closes when nvim exits. |
 
 ```toml
@@ -287,7 +287,8 @@ built-in text preview otherwise.
 When you choose a file, Termscope opens a split beside the source pane, or a
 new tab with `open_target = "tab"`, and runs `nvim +line path` in it. With
 `close_on_exit = true`, Termscope launches nvim with `exec`, so the pane closes
-when nvim exits. For URLs, it uses the default opener unless `TERMSCOPE_OPENER`
+when nvim exits. With `open_target = "popup"`, nvim replaces the picker inside
+its popup, and the popup closes when nvim exits; the pane layout stays as it was. For URLs, it uses the default opener unless `TERMSCOPE_OPENER`
 is set.
 
 ## Project documentation

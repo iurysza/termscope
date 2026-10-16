@@ -39,8 +39,8 @@ command = ["python3", "termscope_herdr.py", "--open-links-pane"]
 id = "picker"
 title = "Termscope"
 placement = "popup"
-width = "80%"
-height = "60%"
+width = "95%"
+height = "90%"
 command = ["python3", "termscope_herdr.py"]
 
 [[panes]]

@@ -1763,6 +1763,53 @@ class TestHerdrBackend(unittest.TestCase):
                     tfp.open_settings(), {"open_target": "split", "close_on_exit": False}
                 )
 
+    def test_open_settings_accept_popup(self):
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "config.toml").write_text('open_target = "popup"\n', encoding="utf-8")
+            with patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": config_dir}):
+                self.assertEqual(
+                    tfp.open_settings(), {"open_target": "popup", "close_on_exit": False}
+                )
+
+    def test_open_in_nvim_split_popup_runs_nvim_in_the_picker_popup(self):
+        backend = tfp.HerdrBackend()
+
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "config.toml").write_text('open_target = "popup"\n', encoding="utf-8")
+            with patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": config_dir}), \
+                 patch.object(tfp, "_has_terminal", return_value=True), \
+                 patch.object(tfp.os, "chdir") as chdir, \
+                 patch.object(tfp.os, "execvp", side_effect=SystemExit(0)) as execvp, \
+                 patch.object(tfp.subprocess, "run") as run:
+                with self.assertRaises(SystemExit):
+                    backend.open_in_nvim_split(
+                        Path("/tmp/repo/src/main.py"), "12", Path("/tmp/repo"), "w1:p1"
+                    )
+
+        chdir.assert_called_once_with(Path("/tmp/repo"))
+        execvp.assert_called_once_with("nvim", ["nvim", "+12", "/tmp/repo/src/main.py"])
+        run.assert_not_called()
+
+    def test_open_in_nvim_split_popup_without_terminal_splits(self):
+        backend = tfp.HerdrBackend()
+        split_json = json.dumps({
+            "result": {"pane": {"pane_id": "w1:p2"}}
+        })
+
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "config.toml").write_text('open_target = "popup"\n', encoding="utf-8")
+            with patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": config_dir}), \
+                 patch.object(tfp, "_has_terminal", return_value=False), \
+                 patch.object(tfp.os, "execvp") as execvp, \
+                 patch.object(tfp.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=split_json)) as run, \
+                 patch.object(backend, "_herdr_bin", return_value="herdr"), \
+                 patch.object(tfp.sys, "exit") as mock_exit:
+                backend.open_in_nvim_split(Path("/tmp/repo/src/main.py"), "12", Path("/tmp/repo"), "w1:p1")
+
+        execvp.assert_not_called()
+        self.assertEqual(run.call_args_list[0].args[0][:3], ["herdr", "pane", "split"])
+        mock_exit.assert_called_once_with(0)
+
     def test_open_in_nvim_split_splits_then_runs(self):
         backend = tfp.HerdrBackend()
         split_json = json.dumps({
