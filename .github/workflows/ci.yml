@@ -54,7 +54,7 @@ jobs:
           assert {a['id'] for a in manifest['actions']} == {'open', 'open-links'}
           assert {p['id'] for p in manifest['panes']} == {'picker', 'link-picker'}
           assert all(p['placement'] == 'popup' for p in manifest['panes'])
-          assert all(p['width'] == '80%' and p['height'] == '60%' for p in manifest['panes'])
+          assert {p['id']: (p['width'], p['height']) for p in manifest['panes']} == {'picker': ('95%', '90%'), 'link-picker': ('80%', '60%')}
 
           for path in Path('cable').glob('termscope-*.toml'):
               channel = tomllib.loads(path.read_text())
