@@ -181,14 +181,20 @@ File picker (Television):
 | `Ctrl-S` | Cycle appearance order / alphabetical sort |
 
 On a URL row, `Enter` / `Ctrl-O` open it with the default opener and `Ctrl-Y`
-copies it (`pbcopy`; no-op if `pbcopy` is missing).
+copies it (`pbcopy` on macOS, `wl-copy` on Wayland, then `xclip` or `xsel`).
+When those tools fail, or when there is no display, Ctrl-Y writes OSC 52
+(`ESC ] 52 ; c ; <base64> BEL`) to the controlling terminal, `/dev/tty`.
+Inside tmux the sequence is wrapped for passthrough. The picker shows
+"Link sent to terminal clipboard" for that write, because the terminal
+cannot confirm it. A refused copy, including a payload over 100 KB of
+base64 or an unwritable `/dev/tty`, shows "Could not copy link to clipboard".
 
 Link picker:
 
 | Key | Action |
 | --- | --- |
 | `Enter` | Open URL with the default opener |
-| `Ctrl-Y` | Copy URL (`pbcopy`; no-op if `pbcopy` is missing) |
+| `Ctrl-Y` | Copy URL, or send OSC 52 to the terminal |
 | `Ctrl-S` | Cycle appearance order / alphabetical sort |
 
 ## tmux usage

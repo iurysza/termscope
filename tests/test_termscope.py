@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import SimpleNamespace
@@ -790,33 +791,56 @@ class TestCancelledPickerNoOpen(unittest.TestCase):
 
 
 class TestPickUrlSelection(unittest.TestCase):
-    def _run(self, key):
+    def _run(self, key, *, copy_error=False, copy_status="copied"):
         args = SimpleNamespace(pane_path="/tmp/repo", pane_id="%1")
         result = tfp.PickerResult(selection="https://x.test/a", key=key)
+        clip_error = tfp.ClipboardError("Could not copy to clipboard")
         with patch.object(tfp, "capture_pane_text", return_value="https://x.test/a\n"), \
              patch.object(tfp, "strip_ansi", side_effect=lambda x: x), \
              patch.object(tfp, "list_repo_files", return_value=["src/main.py"]), \
              patch.object(tfp, "extract_visible_candidates", return_value=["src/main.py"]), \
              patch.object(tfp, "run_tv_visible", return_value=result) as tv, \
              patch.object(tfp, "open_url") as opener, \
-             patch.object(tfp, "copy_to_clipboard") as clip, \
-             patch.object(tfp, "show_message"), \
+             patch.object(
+                 tfp,
+                 "copy_to_clipboard",
+                 side_effect=clip_error if copy_error else None,
+                 return_value=copy_status,
+             ) as clip, \
+             patch.object(tfp, "show_message") as message, \
              patch.object(tfp, "_open_target") as open_target, \
              patch.object(tfp.subprocess, "run"):
             tfp.cmd_pick(args)
-        return tv, opener, clip, open_target
+        return tv, opener, clip, open_target, message
 
     def test_enter_opens_url(self):
-        tv, opener, clip, open_target = self._run(None)
+        tv, opener, clip, open_target, message = self._run(None)
         self.assertEqual(tv.call_args.args[0], ["src/main.py", "https://x.test/a"])
         opener.assert_called_once_with("https://x.test/a")
         open_target.assert_not_called()
+        clip.assert_not_called()
+        message.assert_not_called()
 
     def test_ctrl_y_copies_url(self):
-        _, opener, clip, open_target = self._run("ctrl-y")
+        _, opener, clip, open_target, message = self._run("ctrl-y")
         clip.assert_called_once_with("https://x.test/a")
         opener.assert_not_called()
         open_target.assert_not_called()
+        self.assertEqual(message.call_args.args[0], "Link copied to clipboard")
+
+    def test_ctrl_y_reports_copy_failure(self):
+        _, opener, clip, open_target, message = self._run("ctrl-y", copy_error=True)
+        clip.assert_called_once_with("https://x.test/a")
+        opener.assert_not_called()
+        open_target.assert_not_called()
+        self.assertEqual(message.call_args.args[0], "Could not copy link to clipboard")
+
+    def test_ctrl_y_reports_terminal_clipboard(self):
+        _, opener, clip, open_target, message = self._run("ctrl-y", copy_status="sent")
+        clip.assert_called_once_with("https://x.test/a")
+        opener.assert_not_called()
+        open_target.assert_not_called()
+        self.assertEqual(message.call_args.args[0], "Link sent to terminal clipboard")
 
     def test_url_only_screen_still_falls_back_to_full_repo(self):
         args = SimpleNamespace(pane_path="/tmp/repo", pane_id="%1")
@@ -1012,6 +1036,24 @@ class TestLineTargetPreservation(unittest.TestCase):
             tfp._open_target(
                 mode="default",
                 target_text="src/main.py:12",
+                pane_path=Path("/tmp/repo"),
+                pane_id="%1",
+                search_root=Path("/tmp/repo"),
+                state=state,
+            )
+
+        mock_default.assert_called_once_with(fake_file)
+
+    def test_open_continues_when_clipboard_fails(self):
+        state = tfp.DebugState()
+        fake_file = Path("/tmp/repo/src/main.py")
+
+        with patch.object(tfp, "resolve_existing_path", return_value=fake_file), \
+             patch.object(tfp, "copy_to_clipboard", side_effect=tfp.ClipboardError("nope")), \
+             patch.object(tfp, "open_with_default_app") as mock_default:
+            tfp._open_target(
+                mode="default",
+                target_text="src/main.py",
                 pane_path=Path("/tmp/repo"),
                 pane_id="%1",
                 search_root=Path("/tmp/repo"),
@@ -1832,6 +1874,323 @@ class TestHerdrBackend(unittest.TestCase):
         self.assertEqual(calls[1].args[0][3], "w1:p2")
         self.assertEqual(calls[1].args[0][4], "exec nvim +12 /tmp/repo/src/main.py")
         mock_exit.assert_called_once_with(0)
+
+
+@contextmanager
+def clipboard_env(platform, **env):
+    original = sys.platform
+    removed = {}
+    sys.platform = platform
+    for key in ("WAYLAND_DISPLAY", "DISPLAY", "TMUX"):
+        if key not in env and key in os.environ:
+            removed[key] = os.environ.pop(key)
+    try:
+        with patch.dict(os.environ, env, clear=False):
+            yield
+    finally:
+        sys.platform = original
+        os.environ.update(removed)
+
+
+class TestCopyToClipboard(unittest.TestCase):
+    def _run(self, text, fake_run, platform, **env):
+        with clipboard_env(platform, **env), \
+             patch.object(tfp.subprocess, "run", side_effect=fake_run) as run:
+            status = tfp.copy_to_clipboard(text)
+        return run, status
+
+    def test_macos_uses_pbcopy_only(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        _, status = self._run("https://example.com", fake_run, "darwin")
+        self.assertEqual(status, "copied")
+        self.assertEqual(len(calls), 1)
+        command, kwargs = calls[0]
+        self.assertEqual(command, ["pbcopy"])
+        self.assertEqual(kwargs["input"], "https://example.com")
+        self.assertTrue(kwargs["text"])
+        self.assertFalse(kwargs["check"])
+        self.assertIs(kwargs["stdout"], tfp.subprocess.DEVNULL)
+        self.assertIs(kwargs["stderr"], tfp.subprocess.DEVNULL)
+
+    def test_macos_pbcopy_stops_before_x11_tools(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0)
+
+        _, status = self._run("https://example.com", fake_run, "darwin", DISPLAY=":0")
+        self.assertEqual(status, "copied")
+        self.assertEqual(calls, [["pbcopy"]])
+
+    def test_wayland_prefers_wl_copy_then_xclip(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs.get("input")))
+            if cmd[0] == "wl-copy":
+                return SimpleNamespace(returncode=1)
+            return SimpleNamespace(returncode=0)
+
+        _, status = self._run(
+            "https://example.com/a",
+            fake_run,
+            "linux",
+            WAYLAND_DISPLAY="wayland-0",
+            DISPLAY=":0",
+        )
+        self.assertEqual(status, "copied")
+        self.assertEqual(
+            calls,
+            [
+                (["wl-copy"], "https://example.com/a"),
+                (["xclip", "-selection", "clipboard"], "https://example.com/a"),
+            ],
+        )
+
+    def test_wayland_without_x11_falls_back_to_osc52(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            raise FileNotFoundError(cmd[0])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tty = Path(tmp) / "tty"
+            with patch.object(tfp, "_TTY_PATH", str(tty)):
+                _, status = self._run(
+                    "hi",
+                    fake_run,
+                    "linux",
+                    WAYLAND_DISPLAY="wayland-0",
+                )
+            self.assertEqual(calls, [["wl-copy"]])
+            self.assertEqual(status, "sent")
+            self.assertEqual(tty.read_bytes(), b"\033]52;c;aGk=\a")
+
+    def test_x11_skips_missing_xclip_and_uses_xsel(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "xclip":
+                raise FileNotFoundError("xclip")
+            return SimpleNamespace(returncode=0)
+
+        _, status = self._run("https://example.com", fake_run, "linux", DISPLAY=":0")
+        self.assertEqual(status, "copied")
+        self.assertEqual(
+            calls,
+            [
+                ["xclip", "-selection", "clipboard"],
+                ["xsel", "--clipboard", "--input"],
+            ],
+        )
+
+    def test_linux_does_not_try_pbcopy(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd[0])
+            return SimpleNamespace(returncode=0)
+
+        _, status = self._run(
+            "https://example.com",
+            fake_run,
+            "linux",
+            WAYLAND_DISPLAY="wayland-0",
+            DISPLAY=":0",
+        )
+        self.assertEqual(status, "copied")
+        self.assertEqual(calls, ["wl-copy"])
+
+    def test_all_tools_fail(self):
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=1)
+
+        with patch.object(tfp, "_TTY_PATH", "/no/such/termscope/tty"), \
+             self.assertRaises(tfp.ClipboardError) as caught:
+            self._run("https://example.com", fake_run, "linux", DISPLAY=":0")
+        self.assertEqual(str(caught.exception), "Could not copy to clipboard")
+
+    def test_headless_sends_osc52_without_native_tools(self):
+        def fake_run(cmd, **kwargs):
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tty = Path(tmp) / "tty"
+            with patch.object(tfp, "_TTY_PATH", str(tty)):
+                _, status = self._run("hi", fake_run, "linux")
+            self.assertEqual(status, "sent")
+            self.assertEqual(tty.read_bytes(), b"\033]52;c;aGk=\a")
+
+    def test_path_stub_xclip_reads_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp)
+            captured = bin_dir / "captured.txt"
+            tool = bin_dir / "xclip"
+            tool.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" != "-selection" ] || [ "$2" != "clipboard" ]; then\n'
+                "  exit 2\n"
+                "fi\n"
+                '/bin/cat > "$CAPTURED"\n',
+                encoding="utf-8",
+            )
+            tool.chmod(0o755)
+            with clipboard_env(
+                "linux",
+                PATH=str(bin_dir),
+                DISPLAY=":0",
+                CAPTURED=str(captured),
+            ):
+                tfp.copy_to_clipboard("https://example.com/path")
+            self.assertEqual(captured.read_text(encoding="utf-8"), "https://example.com/path")
+
+    def test_path_stub_falls_through_to_xsel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp)
+            log = bin_dir / "log.txt"
+            captured = bin_dir / "captured.txt"
+            xclip = bin_dir / "xclip"
+            xclip.write_text(
+                "#!/bin/sh\n"
+                'echo xclip >> "$LOG"\n'
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            xsel = bin_dir / "xsel"
+            xsel.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" != "--clipboard" ] || [ "$2" != "--input" ]; then\n'
+                "  exit 2\n"
+                "fi\n"
+                'echo xsel >> "$LOG"\n'
+                '/bin/cat > "$CAPTURED"\n',
+                encoding="utf-8",
+            )
+            xclip.chmod(0o755)
+            xsel.chmod(0o755)
+            with clipboard_env(
+                "linux",
+                PATH=str(bin_dir),
+                DISPLAY=":0",
+                LOG=str(log),
+                CAPTURED=str(captured),
+            ):
+                tfp.copy_to_clipboard("https://example.com/xsel")
+            self.assertEqual(log.read_text(encoding="utf-8").splitlines(), ["xclip", "xsel"])
+            self.assertEqual(captured.read_text(encoding="utf-8"), "https://example.com/xsel")
+
+    def test_osc52_sequence_and_tmux_wrap(self):
+        self.assertEqual(tfp._TTY_PATH, "/dev/tty")
+        plain = b"\033]52;c;aGk=\a"
+        wrapped = b"\033Ptmux;\033\033]52;c;aGk=\a\033\\"
+        with tempfile.TemporaryDirectory() as tmp:
+            tty = Path(tmp) / "tty"
+            with patch.object(tfp, "_TTY_PATH", str(tty)), clipboard_env("linux"):
+                self.assertEqual(tfp.copy_to_clipboard("hi"), "sent")
+            self.assertEqual(tty.read_bytes(), plain)
+            tty.unlink()
+            with patch.object(tfp, "_TTY_PATH", str(tty)), \
+                 clipboard_env("linux", TMUX="/tmp/tmux-1000/default,1,0"):
+                self.assertEqual(tfp.copy_to_clipboard("hi"), "sent")
+            self.assertEqual(tty.read_bytes(), wrapped)
+
+    def test_osc52_cap_rejects_oversize_base64(self):
+        self.assertEqual(tfp._OSC52_MAX_BASE64, 100 * 1024)
+        exact = "a" * ((tfp._OSC52_MAX_BASE64 // 4) * 3)
+        over = exact + "a"
+        self.assertEqual(len(tfp.base64.b64encode(exact.encode())), tfp._OSC52_MAX_BASE64)
+        self.assertGreater(len(tfp.base64.b64encode(over.encode())), tfp._OSC52_MAX_BASE64)
+        with tempfile.TemporaryDirectory() as tmp:
+            tty = Path(tmp) / "tty"
+            with patch.object(tfp, "_TTY_PATH", str(tty)), clipboard_env("linux"):
+                self.assertEqual(tfp.copy_to_clipboard(exact), "sent")
+                self.assertEqual(
+                    len(tty.read_bytes()),
+                    len(b"\033]52;c;") + tfp._OSC52_MAX_BASE64 + len(b"\a"),
+                )
+                tty.unlink()
+                with self.assertRaises(tfp.ClipboardError):
+                    tfp.copy_to_clipboard(over)
+            self.assertFalse(tty.exists())
+
+    def test_unwritable_tty_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tty = Path(tmp) / "tty"
+            tty.write_bytes(b"")
+            tty.chmod(0)
+            with patch.object(tfp, "_TTY_PATH", str(tty)), clipboard_env("linux"):
+                with self.assertRaises(tfp.ClipboardError) as caught:
+                    tfp.copy_to_clipboard("hi")
+            self.assertEqual(str(caught.exception), "Could not copy to clipboard")
+            tty.chmod(0o644)
+            self.assertEqual(tty.read_bytes(), b"")
+
+    def test_native_failure_then_osc52(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd[0])
+            return SimpleNamespace(returncode=1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tty = Path(tmp) / "tty"
+            with patch.object(tfp, "_TTY_PATH", str(tty)):
+                _, status = self._run("hi", fake_run, "linux", DISPLAY=":0")
+            self.assertEqual(calls, ["xclip", "xsel"])
+            self.assertEqual(status, "sent")
+            self.assertEqual(tty.read_bytes(), b"\033]52;c;aGk=\a")
+
+
+class TestLinkPickerCopy(unittest.TestCase):
+    def _run(self, key, *, copy_error=False, copy_status="copied"):
+        args = SimpleNamespace(pane_path="/tmp/repo", pane_id="%1")
+        result = tfp.PickerResult(selection="https://example.com", key=key)
+        clip_error = tfp.ClipboardError("Could not copy to clipboard")
+        with patch.object(tfp, "capture_pane_text", return_value="https://example.com\n"), \
+             patch.object(tfp, "strip_ansi", side_effect=lambda text: text), \
+             patch.object(tfp, "run_tv_links", return_value=result), \
+             patch.object(tfp, "open_url") as opener, \
+             patch.object(
+                 tfp,
+                 "copy_to_clipboard",
+                 side_effect=clip_error if copy_error else None,
+                 return_value=copy_status,
+             ) as clip, \
+             patch.object(tfp, "show_message") as message:
+            tfp.cmd_links(args)
+        return opener, clip, message
+
+    def test_ctrl_y_reports_success(self):
+        opener, clip, message = self._run("ctrl-y")
+        clip.assert_called_once_with("https://example.com")
+        opener.assert_not_called()
+        self.assertEqual(message.call_args.args[0], "Link copied to clipboard")
+
+    def test_ctrl_y_reports_failure(self):
+        opener, clip, message = self._run("ctrl-y", copy_error=True)
+        clip.assert_called_once_with("https://example.com")
+        opener.assert_not_called()
+        self.assertEqual(message.call_args.args[0], "Could not copy link to clipboard")
+
+    def test_ctrl_y_reports_terminal_clipboard(self):
+        opener, clip, message = self._run("ctrl-y", copy_status="sent")
+        clip.assert_called_once_with("https://example.com")
+        opener.assert_not_called()
+        self.assertEqual(message.call_args.args[0], "Link sent to terminal clipboard")
+
+    def test_enter_opens_when_copy_fails(self):
+        opener, clip, message = self._run("enter", copy_error=True)
+        clip.assert_called_once_with("https://example.com")
+        opener.assert_called_once_with("https://example.com")
+        message.assert_not_called()
 
 
 if __name__ == "__main__":
