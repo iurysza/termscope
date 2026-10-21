@@ -1133,11 +1133,41 @@ def open_in_nvim_split(
     backend.open_in_nvim_split(path, line, pane_path, pane_id)
 
 
+class ClipboardError(Exception):
+    """No clipboard tool accepted the text."""
+
+
+def _clipboard_commands() -> list[list[str]]:
+    commands: list[list[str]] = []
+    if sys.platform == "darwin":
+        commands.append(["pbcopy"])
+    if os.environ.get("WAYLAND_DISPLAY"):
+        commands.append(["wl-copy"])
+    if os.environ.get("DISPLAY"):
+        commands.append(["xclip", "-selection", "clipboard"])
+        commands.append(["xsel", "--clipboard", "--input"])
+    return commands
+
+
 def copy_to_clipboard(text: str) -> None:
-    try:
-        subprocess.run(["pbcopy"], input=text, text=True, check=False)
-    except FileNotFoundError:
-        pass
+    """Copy text to the clipboard, or raise ClipboardError."""
+    for command in _clipboard_commands():
+        try:
+            # xclip's forked clipboard server inherits stdout. A pipe with no
+            # reader keeps this call waiting, so discard stdio.
+            result = subprocess.run(
+                command,
+                input=text,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            continue
+        if result.returncode == 0:
+            return
+    raise ClipboardError("Could not copy to clipboard")
 
 
 def send_annotate_command(
@@ -1235,7 +1265,11 @@ def _open_target(
 
     state.resolved_path = str(resolved)
     debug_dump(state)
-    copy_to_clipboard(str(resolved))
+    try:
+        copy_to_clipboard(str(resolved))
+    except ClipboardError:
+        # Opening the file still proceeds when no clipboard tool is available.
+        pass
 
     if mode == "default":
         open_with_default_app(resolved)
@@ -1446,8 +1480,12 @@ def cmd_pick(args: argparse.Namespace) -> None:
         debug_dump(state)
         log_event("pick_url", pane_id=pane_id, key=key, url=selection)
         if key == "ctrl-y":
-            copy_to_clipboard(selection)
-            show_message("Link copied to clipboard", backend)
+            try:
+                copy_to_clipboard(selection)
+            except ClipboardError:
+                show_message("Could not copy link to clipboard", backend)
+            else:
+                show_message("Link copied to clipboard", backend)
             return
         open_url(selection)
         return
@@ -1536,11 +1574,19 @@ def cmd_links(args: argparse.Namespace) -> None:
 
     state.resolved_path = selection
     state.mode = "url"
-    copy_to_clipboard(selection)
+    try:
+        copy_to_clipboard(selection)
+    except ClipboardError:
+        copied = False
+    else:
+        copied = True
     debug_dump(state)
 
     if picker_result.key == "ctrl-y":
-        show_message("Link copied to clipboard", backend)
+        if copied:
+            show_message("Link copied to clipboard", backend)
+        else:
+            show_message("Could not copy link to clipboard", backend)
         return
 
     open_url(selection)

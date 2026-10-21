@@ -181,14 +181,15 @@ File picker (Television):
 | `Ctrl-S` | Cycle appearance order / alphabetical sort |
 
 On a URL row, `Enter` / `Ctrl-O` open it with the default opener and `Ctrl-Y`
-copies it (`pbcopy`; no-op if `pbcopy` is missing).
+copies it (`pbcopy` on macOS, `wl-copy` on Wayland, then `xclip` or `xsel`).
+A failed copy shows "Could not copy link to clipboard".
 
 Link picker:
 
 | Key | Action |
 | --- | --- |
 | `Enter` | Open URL with the default opener |
-| `Ctrl-Y` | Copy URL (`pbcopy`; no-op if `pbcopy` is missing) |
+| `Ctrl-Y` | Copy URL (`pbcopy`, `wl-copy`, `xclip`, or `xsel`); report failure |
 | `Ctrl-S` | Cycle appearance order / alphabetical sort |
 
 ## tmux usage
