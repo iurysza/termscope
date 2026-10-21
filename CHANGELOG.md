@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/iurysza/termscope/compare/v1.0.1...v1.0.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* report Linux clipboard failures instead of a false success ([#31](https://github.com/iurysza/termscope/issues/31)) ([1f5b363](https://github.com/iurysza/termscope/commit/1f5b36331aea3153f3a03adebe9a49a068701f77)), closes [#30](https://github.com/iurysza/termscope/issues/30)
+
 ## [1.0.1](https://github.com/iurysza/termscope/compare/v1.0.0...v1.0.1) (2026-10-16)
 
 
