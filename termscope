@@ -1149,8 +1149,32 @@ def _clipboard_commands() -> list[list[str]]:
     return commands
 
 
-def copy_to_clipboard(text: str) -> None:
-    """Copy text to the clipboard, or raise ClipboardError."""
+# OSC 52 cannot confirm the terminal stored the text. Callers use "sent"
+# for that write and "copied" when a native tool exits 0.
+_TTY_PATH = "/dev/tty"
+_OSC52_MAX_BASE64 = 100 * 1024
+
+
+def _osc52_sequence(text: str) -> bytes | None:
+    """Return an OSC 52 write, or None when the base64 payload is over the cap."""
+    encoded = base64.b64encode(text.encode("utf-8"))
+    if len(encoded) > _OSC52_MAX_BASE64:
+        return None
+    sequence = b"\033]52;c;" + encoded + b"\a"
+    if os.environ.get("TMUX"):
+        sequence = b"\033Ptmux;" + sequence.replace(b"\033", b"\033\033") + b"\033\\"
+    return sequence
+
+
+def _write_tty(data: bytes) -> None:
+    with open(_TTY_PATH, "wb", buffering=0) as tty:
+        written = tty.write(data)
+    if written != len(data):
+        raise OSError("short write to controlling terminal")
+
+
+def copy_to_clipboard(text: str) -> str:
+    """Copy text. Return "copied" or "sent", or raise ClipboardError."""
     for command in _clipboard_commands():
         try:
             # xclip's forked clipboard server inherits stdout. A pipe with no
@@ -1166,8 +1190,23 @@ def copy_to_clipboard(text: str) -> None:
         except OSError:
             continue
         if result.returncode == 0:
-            return
-    raise ClipboardError("Could not copy to clipboard")
+            return "copied"
+    sequence = _osc52_sequence(text)
+    if sequence is None:
+        raise ClipboardError("Could not copy to clipboard")
+    try:
+        _write_tty(sequence)
+    except OSError as exc:
+        raise ClipboardError("Could not copy to clipboard") from exc
+    return "sent"
+
+
+def clipboard_message(status: str | None) -> str:
+    if status == "sent":
+        return "Link sent to terminal clipboard"
+    if status == "copied":
+        return "Link copied to clipboard"
+    return "Could not copy link to clipboard"
 
 
 def send_annotate_command(
@@ -1481,11 +1520,10 @@ def cmd_pick(args: argparse.Namespace) -> None:
         log_event("pick_url", pane_id=pane_id, key=key, url=selection)
         if key == "ctrl-y":
             try:
-                copy_to_clipboard(selection)
+                status = copy_to_clipboard(selection)
             except ClipboardError:
-                show_message("Could not copy link to clipboard", backend)
-            else:
-                show_message("Link copied to clipboard", backend)
+                status = None
+            show_message(clipboard_message(status), backend)
             return
         open_url(selection)
         return
@@ -1575,18 +1613,13 @@ def cmd_links(args: argparse.Namespace) -> None:
     state.resolved_path = selection
     state.mode = "url"
     try:
-        copy_to_clipboard(selection)
+        status = copy_to_clipboard(selection)
     except ClipboardError:
-        copied = False
-    else:
-        copied = True
+        status = None
     debug_dump(state)
 
     if picker_result.key == "ctrl-y":
-        if copied:
-            show_message("Link copied to clipboard", backend)
-        else:
-            show_message("Could not copy link to clipboard", backend)
+        show_message(clipboard_message(status), backend)
         return
 
     open_url(selection)
