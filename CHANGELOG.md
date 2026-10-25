@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/iurysza/termscope/compare/v1.0.2...v1.1.0) (2026-10-25)
+
+
+### Features
+
+* add open_target = "popup" to open files in the picker popup ([#27](https://github.com/iurysza/termscope/issues/27)) ([c637fbc](https://github.com/iurysza/termscope/commit/c637fbc8b26f33bc0a639d1d248f93b6d18870b8))
+
 ## [1.0.2](https://github.com/iurysza/termscope/compare/v1.0.1...v1.0.2) (2026-10-21)
 
 
