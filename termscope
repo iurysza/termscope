@@ -262,6 +262,10 @@ class TmuxBackend(MultiplexerBackend):
         )
 
 
+def _has_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def open_settings() -> dict:
     """Open-behavior settings from the Herdr plugin config directory."""
     settings: dict = {"open_target": "split", "close_on_exit": False}
@@ -274,7 +278,7 @@ def open_settings() -> dict:
 
             with config_path.open("rb") as fh:
                 data = tomllib.load(fh)
-            if data.get("open_target") in ("split", "tab"):
+            if data.get("open_target") in ("split", "tab", "popup"):
                 settings["open_target"] = data["open_target"]
             if isinstance(data.get("close_on_exit"), bool):
                 settings["close_on_exit"] = data["close_on_exit"]
@@ -360,6 +364,21 @@ class HerdrBackend(MultiplexerBackend):
     ) -> NoReturn:
         settings = open_settings()
         herdr = self._herdr_bin()
+
+        if settings["open_target"] == "popup" and _has_terminal():
+            # The picker already runs in a Herdr popup: replace it with nvim, so
+            # the file opens in that popup and the popup closes when nvim exits.
+            # Without a terminal (CLI use), fall through to a split.
+            # Herdr's popup PATH often omits Homebrew. Resolve nvim the same way
+            # as Television, then exec that absolute path. Split and tab still
+            # pass a bare `nvim` command to `herdr pane run`: that starts the
+            # pane shell, which already has Homebrew on PATH.
+            nvim = _nvim_path()
+            if not nvim:
+                sys.exit("termscope: nvim not found")
+            os.chdir(pane_path)
+            argv = [nvim, f"+{line}", str(path)] if line else [nvim, str(path)]
+            os.execvp(argv[0], argv)
 
         if settings["open_target"] == "tab":
             subcommand = ["tab", "create", "--cwd", str(pane_path), "--focus"]
@@ -899,6 +918,34 @@ def _television_path() -> str | None:
     """Find Television when Herdr's popup PATH omits Homebrew."""
     seen: set[str] = set()
     for candidate in _television_candidates():
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if _is_executable(candidate):
+            return candidate
+    return None
+
+
+_HOMEBREW_NVIM_PATHS = ("/opt/homebrew/bin/nvim", "/usr/local/bin/nvim")
+
+
+def _nvim_candidates() -> list[str]:
+    """Absolute nvim paths that do not depend on an interactive shell PATH."""
+    candidates: list[str] = []
+    which = shutil.which("nvim")
+    if which:
+        candidates.append(which)
+    prefix = os.environ.get("HOMEBREW_PREFIX", "").strip()
+    if prefix:
+        candidates.append(str(Path(prefix) / "bin" / "nvim"))
+    candidates.extend(_HOMEBREW_NVIM_PATHS)
+    return candidates
+
+
+def _nvim_path() -> str | None:
+    """Find nvim when Herdr's popup PATH omits Homebrew."""
+    seen: set[str] = set()
+    for candidate in _nvim_candidates():
         if candidate in seen:
             continue
         seen.add(candidate)

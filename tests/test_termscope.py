@@ -1098,6 +1098,35 @@ class TestSortEnvVar(unittest.TestCase):
 
 
 class TestTelevisionCommands(unittest.TestCase):
+    def test_homebrew_nvim_is_found_without_nvim_on_path(self):
+        with patch.object(tfp.shutil, "which", return_value=None), \
+             patch.dict(os.environ, {"HOMEBREW_PREFIX": ""}, clear=False), \
+             patch.object(tfp.os.path, "isfile", side_effect=lambda path: path == "/opt/homebrew/bin/nvim"), \
+             patch.object(tfp.os, "access", return_value=True):
+            self.assertEqual(tfp._nvim_path(), "/opt/homebrew/bin/nvim")
+
+    def test_usr_local_nvim_is_found_without_nvim_on_path(self):
+        with patch.object(tfp.shutil, "which", return_value=None), \
+             patch.dict(os.environ, {"HOMEBREW_PREFIX": ""}, clear=False), \
+             patch.object(tfp.os.path, "isfile", side_effect=lambda path: path == "/usr/local/bin/nvim"), \
+             patch.object(tfp.os, "access", return_value=True):
+            self.assertEqual(tfp._nvim_path(), "/usr/local/bin/nvim")
+
+    def test_homebrew_prefix_nvim_is_found_without_nvim_on_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = Path(tmp) / "homebrew"
+            nvim = prefix / "bin" / "nvim"
+            nvim.parent.mkdir(parents=True)
+            nvim.write_text("#!/bin/sh\n")
+            nvim.chmod(0o755)
+            env = {
+                "HOMEBREW_PREFIX": str(prefix),
+                "PATH": "/usr/bin:/bin",
+            }
+            with patch.dict(os.environ, env, clear=False), \
+                 patch.object(tfp.shutil, "which", return_value=None):
+                self.assertEqual(tfp._nvim_path(), str(nvim))
+
     def test_homebrew_television_is_found_without_homebrew_on_path(self):
         with patch.dict(os.environ, {"XDG_CONFIG_HOME": "/tmp/termscope-missing-config"}, clear=False), \
              patch.object(tfp.shutil, "which", return_value=None), \
@@ -1827,6 +1856,110 @@ class TestHerdrBackend(unittest.TestCase):
                 self.assertEqual(
                     tfp.open_settings(), {"open_target": "split", "close_on_exit": False}
                 )
+
+    def test_open_settings_accept_popup(self):
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "config.toml").write_text('open_target = "popup"\n', encoding="utf-8")
+            with patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": config_dir}):
+                self.assertEqual(
+                    tfp.open_settings(), {"open_target": "popup", "close_on_exit": False}
+                )
+
+    def test_open_in_nvim_split_popup_runs_nvim_in_the_picker_popup(self):
+        backend = tfp.HerdrBackend()
+
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "config.toml").write_text('open_target = "popup"\n', encoding="utf-8")
+            with patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": config_dir}), \
+                 patch.object(tfp, "_has_terminal", return_value=True), \
+                 patch.object(tfp.shutil, "which", return_value="/usr/bin/nvim"), \
+                 patch.object(tfp, "_is_executable", return_value=True), \
+                 patch.object(tfp.os, "chdir") as chdir, \
+                 patch.object(tfp.os, "execvp", side_effect=SystemExit(0)) as execvp, \
+                 patch.object(tfp.subprocess, "run") as run:
+                with self.assertRaises(SystemExit):
+                    backend.open_in_nvim_split(
+                        Path("/tmp/repo/src/main.py"), "12", Path("/tmp/repo"), "w1:p1"
+                    )
+
+        chdir.assert_called_once_with(Path("/tmp/repo"))
+        execvp.assert_called_once_with(
+            "/usr/bin/nvim", ["/usr/bin/nvim", "+12", "/tmp/repo/src/main.py"]
+        )
+        run.assert_not_called()
+
+    def test_open_in_nvim_split_popup_execs_homebrew_nvim_off_path(self):
+        backend = tfp.HerdrBackend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = Path(tmp) / "homebrew"
+            nvim = prefix / "bin" / "nvim"
+            nvim.parent.mkdir(parents=True)
+            nvim.write_text("#!/bin/sh\n")
+            nvim.chmod(0o755)
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            (config_dir / "config.toml").write_text('open_target = "popup"\n', encoding="utf-8")
+            env = {
+                "HERDR_PLUGIN_CONFIG_DIR": str(config_dir),
+                "HOMEBREW_PREFIX": str(prefix),
+                "PATH": "/usr/bin:/bin",
+            }
+            with patch.dict(os.environ, env, clear=False), \
+                 patch.object(tfp, "_has_terminal", return_value=True), \
+                 patch.object(tfp.shutil, "which", return_value=None), \
+                 patch.object(tfp.os, "chdir") as chdir, \
+                 patch.object(tfp.os, "execvp", side_effect=SystemExit(0)) as execvp, \
+                 patch.object(tfp.subprocess, "run") as run:
+                with self.assertRaises(SystemExit):
+                    backend.open_in_nvim_split(
+                        Path("/tmp/repo/src/main.py"), "12", Path("/tmp/repo"), "w1:p1"
+                    )
+
+        chdir.assert_called_once_with(Path("/tmp/repo"))
+        execvp.assert_called_once_with(str(nvim), [str(nvim), "+12", "/tmp/repo/src/main.py"])
+        run.assert_not_called()
+
+    def test_open_in_nvim_split_popup_exits_when_nvim_is_missing(self):
+        backend = tfp.HerdrBackend()
+
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "config.toml").write_text('open_target = "popup"\n', encoding="utf-8")
+            with patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": config_dir}), \
+                 patch.object(tfp, "_has_terminal", return_value=True), \
+                 patch.object(tfp, "_nvim_path", return_value=None), \
+                 patch.object(tfp.os, "chdir") as chdir, \
+                 patch.object(tfp.os, "execvp") as execvp, \
+                 patch.object(tfp.subprocess, "run") as run:
+                with self.assertRaises(SystemExit) as raised:
+                    backend.open_in_nvim_split(
+                        Path("/tmp/repo/src/main.py"), "12", Path("/tmp/repo"), "w1:p1"
+                    )
+
+        self.assertEqual(raised.exception.code, "termscope: nvim not found")
+        chdir.assert_not_called()
+        execvp.assert_not_called()
+        run.assert_not_called()
+
+    def test_open_in_nvim_split_popup_without_terminal_splits(self):
+        backend = tfp.HerdrBackend()
+        split_json = json.dumps({
+            "result": {"pane": {"pane_id": "w1:p2"}}
+        })
+
+        with tempfile.TemporaryDirectory() as config_dir:
+            Path(config_dir, "config.toml").write_text('open_target = "popup"\n', encoding="utf-8")
+            with patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": config_dir}), \
+                 patch.object(tfp, "_has_terminal", return_value=False), \
+                 patch.object(tfp.os, "execvp") as execvp, \
+                 patch.object(tfp.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=split_json)) as run, \
+                 patch.object(backend, "_herdr_bin", return_value="herdr"), \
+                 patch.object(tfp.sys, "exit") as mock_exit:
+                backend.open_in_nvim_split(Path("/tmp/repo/src/main.py"), "12", Path("/tmp/repo"), "w1:p1")
+
+        execvp.assert_not_called()
+        self.assertEqual(run.call_args_list[0].args[0][:3], ["herdr", "pane", "split"])
+        mock_exit.assert_called_once_with(0)
 
     def test_open_in_nvim_split_splits_then_runs(self):
         backend = tfp.HerdrBackend()
