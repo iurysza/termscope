@@ -286,7 +286,9 @@ Herdr plugin actions run without a TTY, so `termscope.open` first opens an
 `80% × 60%` session-modal popup. The popup inherits the source pane id/cwd and
 an absolute Television path when Homebrew `tv` is off the popup `PATH`. It
 captures visible text from every pane in the tab with
-`herdr pane read --source visible`, scans the repo with `fd`, and runs
+`herdr pane read --source recent-unwrapped --lines <viewport rows>`, so paths
+the terminal soft-wrapped across rows come back whole (a pane scrolled into its
+history uses `--source visible`), scans the repo with `fd`, and runs
 Television. Two bundled channels let `Ctrl-S` cycle between
 appearance and alphabetical order. File previews use `bat` when available and a
 built-in text preview otherwise.
