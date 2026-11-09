@@ -1806,6 +1806,58 @@ class TestHerdrBackend(unittest.TestCase):
         cmd = run.call_args.args[0]
         self.assertEqual(cmd, ["herdr", "pane", "read", "w1:p1", "--source", "visible"])
 
+    def _capture_with_scroll(self, scroll, unwrapped_returncode=0):
+        """Capture w1:p1 with the given `scroll` in its pane list entry; returns (text, read commands)."""
+        pane_list = {"result": {"panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "scroll": scroll}]}}
+        reads = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1:3] == ["pane", "list"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps(pane_list))
+            reads.append(cmd)
+            if "recent-unwrapped" in cmd:
+                return SimpleNamespace(returncode=unwrapped_returncode, stdout="joined\n", stderr="bad source")
+            return SimpleNamespace(returncode=0, stdout="row1\nrow2\n")
+
+        backend = tfp.HerdrBackend()
+        with patch.dict(tfp.os.environ, {"HERDR_PANE_ID": "w9:p9"}), \
+             patch.object(tfp.subprocess, "run", side_effect=fake_run), \
+             patch.object(backend, "_herdr_bin", return_value="herdr"):
+            return backend.capture_pane_text("w1:p1"), reads
+
+    def test_capture_pane_text_joins_soft_wraps_over_viewport(self):
+        text, reads = self._capture_with_scroll({"viewport_rows": 40, "offset_from_bottom": 0})
+        self.assertEqual(text, "joined\n")
+        self.assertEqual(
+            reads,
+            [["herdr", "pane", "read", "w1:p1", "--source", "recent-unwrapped", "--lines", "40"]],
+        )
+
+    def test_capture_pane_text_scrolled_pane_reads_visible(self):
+        text, reads = self._capture_with_scroll({"viewport_rows": 40, "offset_from_bottom": 12})
+        self.assertEqual(text, "row1\nrow2\n")
+        self.assertEqual(reads, [["herdr", "pane", "read", "w1:p1", "--source", "visible"]])
+
+    def test_capture_pane_text_falls_back_when_unwrapped_fails(self):
+        text, reads = self._capture_with_scroll({"viewport_rows": 40}, unwrapped_returncode=2)
+        self.assertEqual(text, "row1\nrow2\n")
+        self.assertEqual([cmd[5] for cmd in reads], ["recent-unwrapped", "visible"])
+
+    def test_wrapped_path_is_a_candidate_once_joined(self):
+        repo_paths = [".config/dotfiles/docs/herdr.md"]
+        root = Path("/repo")
+        split = "    see .config/dotfile\ns/docs/herdr.md:87 for more\n"
+        joined = "    see .config/dotfiles/docs/herdr.md:87 for more\n"
+        with patch.object(tfp.Path, "exists", return_value=True):
+            self.assertNotIn(
+                ".config/dotfiles/docs/herdr.md:87",
+                tfp.extract_visible_candidates(split, repo_paths, root, root),
+            )
+            self.assertIn(
+                ".config/dotfiles/docs/herdr.md:87",
+                tfp.extract_visible_candidates(joined, repo_paths, root, root),
+            )
+
     def test_send_annotate_command_runs_slash_command_for_agent(self):
         backend = tfp.HerdrBackend()
         with patch.dict(os.environ, {"SOURCE_PANE_AGENT": "pi"}), \

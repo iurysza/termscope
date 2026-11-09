@@ -318,18 +318,47 @@ class HerdrBackend(MultiplexerBackend):
         return pane_path
 
     def capture_pane_text(self, pane_id: str) -> str:
-        texts = []
-        for pid in self._tab_pane_ids(pane_id):
+        return "\n".join(self._read_visible(pane) for pane in self._tab_panes(pane_id))
+
+    def _read_visible(self, pane: dict) -> str:
+        """The pane's visible rows, with soft-wrapped lines joined back together.
+
+        `--source visible` returns raw screen rows, so a path the terminal wrapped
+        arrives in two halves and matches nothing (tmux gets the same fix from
+        `capture-pane -J`). `recent-unwrapped` over the viewport's row count is the
+        same screen with wraps joined. It reads from the bottom, so a pane scrolled
+        back into history, or a Herdr without the source, falls back to `visible`.
+        """
+        pid = pane["pane_id"]
+        scroll = pane.get("scroll") or {}
+        rows = scroll.get("viewport_rows")
+        if isinstance(rows, int) and rows > 0 and not scroll.get("offset_from_bottom"):
             result = subprocess.run(
-                [self._herdr_bin(), "pane", "read", pid, "--source", "visible"],
+                [self._herdr_bin(), "pane", "read", pid,
+                 "--source", "recent-unwrapped", "--lines", str(rows)],
                 text=True,
                 capture_output=True,
                 check=False,
             )
-            texts.append(result.stdout)
-        return "\n".join(texts)
+            if result.returncode == 0:
+                return result.stdout
+            log_event(
+                "capture_unwrapped_fallback",
+                pane_id=pid,
+                reason=(getattr(result, "stderr", "") or "").strip(),
+            )
+        result = subprocess.run(
+            [self._herdr_bin(), "pane", "read", pid, "--source", "visible"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.stdout
 
     def _tab_pane_ids(self, pane_id: str) -> list[str]:
+        return [pane["pane_id"] for pane in self._tab_panes(pane_id)]
+
+    def _tab_panes(self, pane_id: str) -> list[dict]:
         """All panes in pane_id's tab — source pane first, skipping our own popup."""
         # Sibling panes' relative paths resolve against the source pane's root.
         try:
@@ -342,22 +371,21 @@ class HerdrBackend(MultiplexerBackend):
             panes = json.loads(result.stdout)["result"]["panes"]
         except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
             log_event("capture_tab_fallback", pane_id=pane_id, reason="pane list unreadable")
-            return [pane_id]
-        tab_id = next((p.get("tab_id") for p in panes if p.get("pane_id") == pane_id), None)
+            return [{"pane_id": pane_id}]
+        source = next((p for p in panes if p.get("pane_id") == pane_id), None)
+        tab_id = source.get("tab_id") if source else None
         if tab_id is None:
             log_event("capture_tab_fallback", pane_id=pane_id, reason="source pane not listed")
-            return [pane_id]
+            return [{"pane_id": pane_id}]
         own_id = os.environ.get("HERDR_PANE_ID")
         popup_id = own_id if own_id != pane_id else None
-        ids = [
-            p.get("pane_id")
+        tab_panes = [
+            p
             for p in panes
             if p.get("tab_id") == tab_id and p.get("pane_id") not in (None, popup_id)
         ]
-        if pane_id not in ids:
-            return [pane_id]
-        ids.sort(key=lambda pid: pid != pane_id)
-        return ids
+        tab_panes.sort(key=lambda p: p["pane_id"] != pane_id)
+        return tab_panes
 
     def open_in_nvim_split(
         self, path: Path, line: str, pane_path: Path, pane_id: str
