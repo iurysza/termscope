@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/iurysza/termscope/compare/v1.1.0...v1.1.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **herdr:** join soft-wrapped lines when reading visible pane text ([#34](https://github.com/iurysza/termscope/issues/34)) ([af7ddcd](https://github.com/iurysza/termscope/commit/af7ddcd62dae3c7baac8e59ac85f528ee73321e3))
+
 ## [1.1.0](https://github.com/iurysza/termscope/compare/v1.0.2...v1.1.0) (2026-10-25)
 
 
