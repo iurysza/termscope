@@ -826,6 +826,8 @@ def list_repo_files(search_root: Path) -> list[str]:
                 "--follow",
                 "--exclude",
                 ".git",
+                "--max-results",
+                "5000",
                 ".",
             ],
             cwd=search_root,
@@ -840,9 +842,8 @@ def list_repo_files(search_root: Path) -> list[str]:
         return []
     if result.returncode != 0:
         return []
-    lines = [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
-    # Bound scan cost and picker startup time on very large repositories.
-    return lines[:5000]
+    # fd stops at --max-results, so a huge tree does not have to be listed first.
+    return [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
 
 
 # --------------------------------------------------------------------------- #

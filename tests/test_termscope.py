@@ -2378,5 +2378,25 @@ class TestLinkPickerCopy(unittest.TestCase):
         message.assert_not_called()
 
 
+class TestListRepoFiles(unittest.TestCase):
+    def test_fd_stops_after_5000_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seen: dict[str, object] = {}
+
+            def fake_run(cmd, **kwargs):
+                seen["cmd"] = list(cmd)
+                seen["cwd"] = kwargs.get("cwd")
+                return SimpleNamespace(returncode=0, stdout="a.py\nsub\n")
+
+            with patch.object(tfp.subprocess, "run", side_effect=fake_run):
+                files = tfp.list_repo_files(Path(tmp))
+
+        self.assertEqual(files, ["a.py", "sub"])
+        cmd = seen["cmd"]
+        self.assertIsInstance(cmd, list)
+        self.assertEqual(cmd[cmd.index("--max-results") + 1], "5000")
+        self.assertEqual(seen["cwd"], Path(tmp))
+
+
 if __name__ == "__main__":
     unittest.main()
