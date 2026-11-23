@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""termscope / termscope — one-file Python picker for tmux and herdr."""
+"""termscope — one-file Python picker for tmux, Herdr, Herdr.app, and Rex."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import sys
 import tempfile
 import traceback
 import uuid
+from urllib.parse import unquote
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -280,7 +281,8 @@ def _app_config_path() -> Path:
 def open_settings(app: bool = False) -> dict:
     """Open-behavior settings from the Herdr plugin config directory.
 
-    With app=True (Herdr.app backend) the file comes from `_app_config_path`.
+    With app=True the file comes from `_app_config_path`. Herdr.app and Rex
+    both pass app=True, so `TERMSCOPE_CONFIG` overrides the plugin file.
     """
     settings: dict = {"open_target": "split", "close_on_exit": False}
 
@@ -633,12 +635,296 @@ class AppBackend(MultiplexerBackend):
         print(f"termscope: {message}", file=sys.stderr)
 
 
+_REX_BLOCK_RE = re.compile(r"^block:[0-9A-Fa-f-]+$")
+_REX_BUNDLE = (
+    "Library/Application Support/com.superlogical.rex/RexServer/"
+    "Versions/Current/Rex Server.app/Contents/MacOS/rex"
+)
+# Same set tmux uses for pane_current_command. Rex reports a process name.
+_REX_AGENTS = {"pi", "opencode", "claude", "codex"}
+
+
+def rex_file_url_path(value: object) -> str | None:
+    """Path from Rex `pwd`.
+
+    After OSC 7 the value is a file:// URL. Some shells report a plain absolute
+    path instead.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith("file://"):
+        rest = value[len("file://"):]
+        slash = rest.find("/")
+        if slash < 0:
+            return None
+        path = unquote(rest[slash:])
+        return path or None
+    if value.startswith("/"):
+        return value
+    return None
+
+
+def rex_binary() -> str | None:
+    """Resolve the Rex CLI the way `herdr-ui` does.
+
+    `REX_BIN`, otherwise `rex` on `PATH`, otherwise the Rex Server app bundle.
+    """
+    configured = os.environ.get("REX_BIN", "").strip()
+    if configured:
+        return configured
+    found = shutil.which("rex")
+    if found:
+        return found
+    bundled = Path.home() / _REX_BUNDLE
+    if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+        return str(bundled)
+    return None
+
+
+def window_id_from_view(view: object, block_id: str) -> str | None:
+    """Window that contains block_id in a `session.view` snapshot.
+
+    Matches the walk in herdr-ui: windows, then layers, then blocks.
+    """
+    if not isinstance(view, dict):
+        return None
+    windows = view.get("windows")
+    if not isinstance(windows, list):
+        return None
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        layers = window.get("layers")
+        if not isinstance(layers, list):
+            continue
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            blocks = layer.get("blocks")
+            if not isinstance(blocks, list):
+                continue
+            for block in blocks:
+                if isinstance(block, dict) and block.get("block_id") == block_id:
+                    window_id = window.get("window_id")
+                    if isinstance(window_id, str) and window_id:
+                        return window_id
+    return None
+
+
+class RexBackend(MultiplexerBackend):
+    """Rex block: `rex capture` for text, `rex split` or `rex run` to open nvim.
+
+    The pane id is the source block id. `rex capture` prints the screen and the
+    scrollback (`--trim` drops trailing blank lines, `--unwrap` joins soft
+    wraps). The public CLI has no viewport-only flag, so the text is returned
+    as Rex printed it.
+    """
+
+    @property
+    def name(self) -> str:
+        return "rex"
+
+    def _block(self, pane_id: str) -> str:
+        return pane_id or os.environ.get("REX_BLOCK", "").strip()
+
+    def _session(self) -> str:
+        return os.environ.get("REX_SESSION", "").strip()
+
+    def _command(self, args: list[str]) -> list[str] | None:
+        binary = rex_binary()
+        if not binary or not args:
+            return None
+        session = self._session()
+        if session and args[:2] == ["api", "call"]:
+            return [binary, "api", "call", "-s", session, *args[2:]]
+        if session:
+            return [binary, args[0], "-s", session, *args[1:]]
+        return [binary, *args]
+
+    def _api(self, method: str, payload: dict) -> dict:
+        cmd = self._command(["api", "call", method, "-"])
+        if not cmd:
+            return {}
+        try:
+            result = subprocess.run(
+                cmd,
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return {}
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def window_id(self, pane_id: str) -> str | None:
+        """Window that holds the source block, so a float stays on its tab."""
+        block = self._block(pane_id)
+        if not block:
+            return None
+        described = self._api("session.describe_block", {"block_id": block})
+        info = described.get("block")
+        if isinstance(info, dict):
+            window_id = info.get("window_id")
+            if isinstance(window_id, str) and window_id:
+                return window_id
+        return window_id_from_view(self._api("session.view", {}), block)
+
+    def resolve_source_pane_path(self, pane_path: Path, pane_id: str) -> Path:
+        block = self._block(pane_id)
+        if not block:
+            return pane_path
+        reported = self._api(
+            "com.superlogical.terminal.pwd", {"block_id": block, "args": {}},
+        )
+        path = rex_file_url_path(reported.get("pwd"))
+        if path and Path(path).is_dir():
+            return Path(path)
+        process = self._api(
+            "com.superlogical.terminal.process", {"block_id": block, "args": {}},
+        )
+        foreground = process.get("foreground")
+        cwd = foreground.get("cwd") if isinstance(foreground, dict) else None
+        if isinstance(cwd, str) and cwd and Path(cwd).is_dir():
+            return Path(cwd)
+        return pane_path
+
+    def capture_pane_text(self, pane_id: str) -> str:
+        block = self._block(pane_id)
+        cmd = self._command(["capture", "-b", block, "--trim", "--unwrap"]) if block else None
+        if not cmd:
+            return ""
+        try:
+            result = subprocess.run(
+                cmd, text=True, capture_output=True, check=False, timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log_event("rex_capture_failed", pane_id=block, error=type(exc).__name__)
+            return ""
+        if result.returncode != 0:
+            log_event(
+                "rex_capture_failed",
+                pane_id=block,
+                stderr=(result.stderr or "").strip()[:500],
+            )
+            return ""
+        return self._visible_rows(block, result.stdout)
+
+    def _visible_rows(self, block: str, text: str) -> str:
+        """Keep the last `rows` lines: capture adds scrollback, the block shows `rows`."""
+        size = self._api("block.method", {"block_id": block, "method": "size"})
+        rows = size.get("rows")
+        if not isinstance(rows, int) or rows <= 0:
+            return text
+        lines = text.splitlines()
+        if len(lines) <= rows:
+            return text
+        return "\n".join(lines[-rows:]) + "\n"
+
+    def _nvim_argv(self, path: Path, line: str) -> list[str]:
+        nvim = _nvim_path() or "nvim"
+        return [nvim, f"+{line}", str(path)] if line else [nvim, str(path)]
+
+    def open_in_nvim_split(
+        self, path: Path, line: str, pane_path: Path, pane_id: str
+    ) -> NoReturn:
+        settings = open_settings(app=True)
+        block = self._block(pane_id)
+
+        if settings["open_target"] == "popup" and _has_terminal():
+            if not _nvim_path():
+                sys.exit("termscope: nvim not found")
+            argv = self._nvim_argv(path, line)
+            os.chdir(pane_path)
+            os.execvp(argv[0], argv)
+
+        if not block:
+            print("termscope: no Rex block to open beside", file=sys.stderr)
+            sys.exit(1)
+
+        if settings["open_target"] == "tab":
+            label = "run"
+            args = ["run", "-c", str(pane_path), "--label", "nvim"]
+        else:
+            label = "split"
+            args = [
+                "split", "-b", block, "--split=right", "-c", str(pane_path), "--label", "nvim",
+            ]
+        # Default Rex closes the block when its command exits. --keep-open
+        # leaves it, matching close_on_exit = false.
+        if not settings["close_on_exit"]:
+            args.append("--keep-open")
+        cmd = self._command(args)
+        if not cmd:
+            print("termscope: rex not found (set REX_BIN or install the Rex CLI)", file=sys.stderr)
+            sys.exit(1)
+        cmd.extend(["--", *self._nvim_argv(path, line)])
+        try:
+            result = subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=15)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"termscope: rex {label} failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            print(f"termscope: rex {label} failed: {detail}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
+    def send_annotate_command(self, pane_id: str, file_path: str) -> None:
+        block = self._block(pane_id)
+        quoted = shlex.quote(file_path)
+        name = ""
+        if block:
+            process = self._api(
+                "com.superlogical.terminal.process", {"block_id": block, "args": {}},
+            )
+            foreground = process.get("foreground")
+            if isinstance(foreground, dict):
+                name = str(foreground.get("name") or "").strip().lower()
+        if not name or name in _REX_AGENTS:
+            command = f"/plannotator-annotate {quoted}"
+        else:
+            command = f"plannotator annotate {quoted}"
+        if block:
+            send = self._command(["send", "-b", block, command])
+            key = self._command(["send-key", "-b", block, "enter"])
+            if send:
+                subprocess.run(send, check=False)
+            if key:
+                subprocess.run(key, check=False)
+        self.show_message("Plannotator annotation requested")
+
+    def show_message(self, message: str) -> None:
+        # Rex has no termscope toast on the CLI. stderr stays in the picker layer.
+        print(f"termscope: {message}", file=sys.stderr)
+
+
+def _rex_autodetect(pane_id: str) -> bool:
+    """True when the pane id is a Rex block, or the Rex env names this pane."""
+    if pane_id and _REX_BLOCK_RE.match(pane_id):
+        return True
+    session = os.environ.get("REX_SESSION", "").strip()
+    block = os.environ.get("REX_BLOCK", "").strip()
+    if not session or not block:
+        return False
+    return not pane_id or pane_id == block
+
+
 def detect_backend(pane_id: str) -> MultiplexerBackend:
-    """Pick a backend from the pane id shape."""
+    """Pick a backend from the pane id shape, then from the Rex environment."""
     if pane_id and re.match(r"^(?:w[0-9A-Za-z]+:p[0-9A-Za-z]+|\d+-\d+)$", pane_id):
         return HerdrBackend()
     if pane_id and re.match(r"^t[0-9a-z]+$", pane_id):
         return AppBackend()
+    if _rex_autodetect(pane_id):
+        return RexBackend()
     return TmuxBackend()
 
 
@@ -649,6 +935,8 @@ def choose_backend(multiplexer: str, pane_id: str) -> MultiplexerBackend:
         return HerdrBackend()
     if multiplexer == "app":
         return AppBackend()
+    if multiplexer == "rex":
+        return RexBackend()
     return detect_backend(pane_id)
 
 
@@ -826,6 +1114,8 @@ def list_repo_files(search_root: Path) -> list[str]:
                 "--follow",
                 "--exclude",
                 ".git",
+                "--max-results",
+                "5000",
                 ".",
             ],
             cwd=search_root,
@@ -840,9 +1130,8 @@ def list_repo_files(search_root: Path) -> list[str]:
         return []
     if result.returncode != 0:
         return []
-    lines = [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
-    # Bound scan cost and picker startup time on very large repositories.
-    return lines[:5000]
+    # fd stops at --max-results, so a huge tree does not have to be listed first.
+    return [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
 
 
 # --------------------------------------------------------------------------- #
@@ -1906,6 +2195,9 @@ def cmd_scan(args: argparse.Namespace) -> None:
 # CLI
 # --------------------------------------------------------------------------- #
 
+_MULTIPLEXERS = ["tmux", "herdr", "app", "rex", "auto"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="termscope")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1913,25 +2205,25 @@ def main() -> None:
     pick_parser = subparsers.add_parser("pick")
     pick_parser.add_argument("--pane-path", required=True)
     pick_parser.add_argument("--pane-id", required=True)
-    pick_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "app", "auto"], default="auto")
+    pick_parser.add_argument("--multiplexer", choices=_MULTIPLEXERS, default="auto")
     pick_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     open_parser = subparsers.add_parser("open")
     open_parser.add_argument("--mode", choices=["nvim", "default"], required=True)
     open_parser.add_argument("--pane-path", required=True)
     open_parser.add_argument("--pane-id", required=True)
-    open_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "app", "auto"], default="auto")
+    open_parser.add_argument("--multiplexer", choices=_MULTIPLEXERS, default="auto")
 
     scan_parser = subparsers.add_parser("scan")
     scan_parser.add_argument("--pane-path", required=True)
     scan_parser.add_argument("--pane-id", required=True)
-    scan_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "app", "auto"], default="auto")
+    scan_parser.add_argument("--multiplexer", choices=_MULTIPLEXERS, default="auto")
     scan_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     links_parser = subparsers.add_parser("links")
     links_parser.add_argument("--pane-path", required=True)
     links_parser.add_argument("--pane-id", required=True)
-    links_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "app", "auto"], default="auto")
+    links_parser.add_argument("--multiplexer", choices=_MULTIPLEXERS, default="auto")
     links_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     preview_parser = subparsers.add_parser("preview")

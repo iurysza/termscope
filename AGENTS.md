@@ -9,6 +9,8 @@ Herdr plugin that opens files and links already visible in the terminal viewport
 - How the project works (agents): `ai-artifacts/_index.md`
 - Picker (no `.py` suffix; shebang `python3`): `termscope`
 - Herdr action and popup wrapper: `termscope_herdr.py`
+- Herdr.app float launcher: `termscope_app.py`
+- Rex float launcher: `termscope_rex.py`
 - Plugin manifest (`id = "termscope"`): `herdr-plugin.toml`
 - Version source of truth: `version.txt`
 - Release Please version: `.release-please-manifest.json`
@@ -26,7 +28,7 @@ There is no package manager, linter, or formatter job. CI uses `python` after se
 Compile and test (README and `.github/workflows/ci.yml`):
 
 ```bash
-python3 -m py_compile termscope termscope_herdr.py
+python3 -m py_compile termscope termscope_herdr.py termscope_app.py termscope_rex.py scripts/herdr_app_keys.py
 python3 -m unittest discover -s tests
 ```
 

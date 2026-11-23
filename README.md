@@ -40,7 +40,7 @@ If it's visible in the window and exists in the repo, you can jump to it.
 
 Termscope stays conservative:
 
-- scans only the visible text of the current window's panes
+- scans only the visible text of the current window's panes on tmux, Herdr, and Herdr.app. On Rex, `rex capture` also returns scrollback; see [Rex floating layer](#rex-floating-layer)
 - verifies paths against the repo/worktree on disk
 - preserves `file:line` targets
 - falls back to a full repo picker when no visible file matches
@@ -59,6 +59,7 @@ Host — pick one:
 
 - [Herdr](https://herdr.dev) `>= 0.7.4` for the plugin
 - tmux for the standalone `termscope` script
+- [Rex](https://www.superlogical.com/rex) (Rex Beta.app) for the floating layer
 
 Picker UI:
 
@@ -220,7 +221,7 @@ In tmux copy-mode these bindings preserve the scrolled viewport instead of
 jumping back to the live bottom of the pane. Reload tmux config after editing
 (`tmux source-file ~/.tmux.conf`, or your config path).
 
-The script also accepts `--multiplexer tmux|herdr|app|auto` (default `auto`).
+The script also accepts `--multiplexer tmux|herdr|app|rex|auto` (default `auto`).
 
 ## Herdr.app floating pane
 
@@ -248,6 +249,83 @@ Open behaviour (`open_target` = `split`, `tab` or `popup`, and `close_on_exit`)
 reads `TERMSCOPE_CONFIG`, else `HERDR_PLUGIN_CONFIG_DIR/config.toml`, else
 `~/.config/herdr/plugins/config/termscope/config.toml`, so the legacy Herdr and
 Herdr.app share one file. `popup` opens nvim inside the float.
+
+## Rex floating layer
+
+Termscope can open over the focused block in Rex. `termscope_rex.py` asks Rex
+for that block's directory, then opens the picker in a floating layer on the
+block's window. The layer is 80% by 60%, the same size as the Herdr popup.
+
+Rex's CLI is `REX_BIN`, otherwise `rex` on `PATH`, otherwise the Rex Server
+app bundle:
+
+```text
+~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex
+```
+
+From a Rex terminal:
+
+```bash
+python3 termscope_rex.py --open
+python3 termscope_rex.py --open-links
+```
+
+The picker reads the block with `rex capture -b "$REX_BLOCK" --trim --unwrap`.
+That command prints the screen and the scrollback, so termscope keeps only the
+last rows that the block shows (its `size` method). A path that has scrolled off
+is not listed.
+
+With `--multiplexer auto`, a pane id that starts with `block:` selects Rex.
+`REX_SESSION` and `REX_BLOCK` also select Rex when the pane id is empty or
+equal to `REX_BLOCK`. A tmux, Herdr, or Herdr.app pane id still selects that
+backend.
+
+File open uses the same `open_target` file as Herdr.app. `split` runs
+`rex split` to the right of the source block. `tab` runs `rex run` in a new
+window. `popup` replaces the picker layer with nvim. With `close_on_exit = false`
+(the default) the new block stays after nvim exits. With `true`, it closes.
+URLs open with the system opener (`open` on macOS).
+
+A Rex key runs outside the terminal's environment, so pass the session and
+block from the action context. `python3` must be on the PATH that `rex.exec`
+uses, and the `termscope_rex.py` path below must be the copy you run:
+
+```lua
+local script = os.getenv("HOME") .. "/src/termscope/termscope_rex.py"
+
+local function termscope(ctx, links)
+  local flag = links and "--open-links" or "--open"
+  local result, err = rex.exec({
+    "python3", script, flag,
+    "--session", ctx.session_id,
+    "--block", ctx.block_id,
+  })
+  if not result then error(err, 0) end
+  if not result.ok then error(result.stderr, 0) end
+end
+
+rex.action{
+  name = "termscope_files",
+  title = "Termscope: visible files",
+  category = "Termscope",
+  run = function(ctx) termscope(ctx, false) end,
+}
+rex.action{
+  name = "termscope_links",
+  title = "Termscope: visible links",
+  category = "Termscope",
+  run = function(ctx) termscope(ctx, true) end,
+}
+rex.bind("ctrl+shift+a", "termscope_files")
+rex.bind("ctrl+shift+e", "termscope_links")
+```
+
+Check the config, then reload it:
+
+```bash
+rex config check
+rex config reload
+```
 
 ## Configuration
 
@@ -296,6 +374,9 @@ needs a real pane id:
 
 # tmux
 ./termscope scan --pane-path "$PWD" --pane-id "$(tmux display-message -p '#{pane_id}')" --multiplexer tmux
+
+# Rex
+./termscope scan --pane-path "$PWD" --pane-id "$REX_BLOCK" --multiplexer rex
 ```
 
 Enable debug dumps:
@@ -335,7 +416,7 @@ is set.
 ## Development
 
 ```bash
-python3 -m py_compile termscope termscope_herdr.py termscope_app.py scripts/herdr_app_keys.py
+python3 -m py_compile termscope termscope_herdr.py termscope_app.py termscope_rex.py scripts/herdr_app_keys.py
 python3 -m unittest discover -s tests
 herdr plugin link "$PWD"
 herdr plugin action invoke termscope.open
