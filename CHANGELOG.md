@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/iurysza/termscope/compare/v1.2.0...v1.3.0) (2026-11-23)
+
+
+### Features
+
+* add Rex support ([#38](https://github.com/iurysza/termscope/issues/38)) ([1429f8c](https://github.com/iurysza/termscope/commit/1429f8c2d9d08f0245f59e433dc594ba43b47f3e))
+
 ## [1.2.0](https://github.com/iurysza/termscope/compare/v1.1.1...v1.2.0) (2026-11-23)
 
 
