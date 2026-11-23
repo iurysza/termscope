@@ -75,7 +75,6 @@ render() {
   else
     sed \
       -e "s|@@HOME@@|$HOME|g" \
-      -e "s|@@PATH@@|$PATH|g" \
       -e "s|@@HC@@|$HC|g" \
       -e "s|@@HERDR_APP@@|$HERDR_APP|g" \
       -e "s|@@HERDR_UI@@|$HERDR_UI|g" \

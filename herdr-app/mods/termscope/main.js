@@ -6,7 +6,10 @@ import { View, div } from "gpui-kit";
 import { exec, focused, notify, props, closeOverlay } from "herdr";
 
 const TITLE = "Termscope";
-const COMMAND = ["/usr/bin/env", "-i", "HOME=@@HOME@@", "PATH=@@PATH@@",
+// `exec` already provides the user environment. Do not pass `env -i`: that
+// drops TERMSCOPE_* and the session variables herdr-ui and hc use to find the
+// running app. Pin only the tool paths recorded at install.
+const COMMAND = ["/usr/bin/env",
   "HC_BIN_PATH=@@HC@@", "HERDR_APP_BIN_PATH=@@HERDR_APP@@", "HERDR_UI_BIN=@@HERDR_UI@@",
   "@@PYTHON@@", "@@LAUNCHER@@", "--open"];
 
@@ -28,9 +31,18 @@ export default class Termscope extends View {
   init(_props, cx) {
     const overlay = props()?.overlay;
     const f = focused();
-    if (!f?.terminal) notify({ title: TITLE, body: "No focused terminal", level: "warning", timeout: 3000 });
-    else cx.spawn(async () => { await launch(f.terminal, f.cwd); });
-    if (overlay) closeOverlay(overlay);
+    const close = () => { if (overlay) closeOverlay(overlay); };
+    if (!f?.terminal) {
+      notify({ title: TITLE, body: "No focused terminal", level: "warning", timeout: 3000 });
+      close();
+      return;
+    }
+    // This task belongs to the overlay. Closing first drops the view and
+    // cancels exec before it runs, and the failure notify is lost with it.
+    cx.spawn(async () => {
+      await launch(f.terminal, f.cwd);
+      close();
+    });
   }
 
   render() {

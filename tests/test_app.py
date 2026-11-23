@@ -124,6 +124,13 @@ echo "hc $*" >> "{self.log}"
         self.assertIn("--space sp1", call)
         self.assertIn(f"--folder {self.work}", call)
 
+    def test_tab_unknown_terminal_fails(self):
+        Path(os.environ["TERMSCOPE_CONFIG"]).write_text('open_target = "tab"\n')
+        with self.assertRaises(SystemExit) as cm:
+            ts.AppBackend().open_in_nvim_split(Path("/f.py"), "", self.work, "t404")
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(any(c.startswith("herdr-app do tab.new") for c in self.calls()))
+
     def test_split_unknown_terminal_fails(self):
         with self.assertRaises(SystemExit) as cm:
             ts.AppBackend().open_in_nvim_split(Path("/f.py"), "1", self.work, "t404")
@@ -150,6 +157,18 @@ class TestLauncher(FakeTools):
         req = termscope_app.build_float_request("links", "t1", "/d", script="/s", python="/py",
                                                 television="/tv")
         self.assertEqual(req["argv"][:3], ["/usr/bin/env", "TERMSCOPE_TV=/tv", "/py"])
+        self.assertNotIn("--sort", req["argv"])
+        plain = termscope_app.build_float_request("pick", "t1", "/d", None, script="/s", python="/py")
+        self.assertNotIn("--sort", plain["argv"])
+
+    def test_resolve_sort(self):
+        with patch.dict(os.environ, {"TERMSCOPE_SORT": "alpha"}):
+            self.assertEqual(termscope_app.resolve_sort(None), "alpha")
+            self.assertEqual(termscope_app.resolve_sort("appearance"), "appearance")
+        with patch.dict(os.environ, {"TERMSCOPE_SORT": "sideways"}):
+            self.assertIsNone(termscope_app.resolve_sort(None))
+        with patch.dict(os.environ, {"TERMSCOPE_SORT": ""}):
+            self.assertIsNone(termscope_app.resolve_sort(None))
 
     def test_parse_response(self):
         self.assertIsNone(termscope_app.parse_float_response('{"ok":true}'))
@@ -179,6 +198,19 @@ class TestLauncher(FakeTools):
         self.run_main(f'cat > "{captured}"; echo \'{{"ok":true}}\'', "--open-links", "--terminal", "t1")
         self.assertIn("links", json.loads(captured.read_text())["argv"])
 
+    def test_sort_from_env_is_forwarded(self):
+        captured = self.dir / "req.json"
+        with patch.dict(os.environ, {"TERMSCOPE_SORT": "alpha"}):
+            self.run_main(f'cat > "{captured}"; echo \'{{"ok":true}}\'', "--open", "--terminal", "t1")
+        argv = json.loads(captured.read_text())["argv"]
+        self.assertEqual(argv[argv.index("--sort") + 1], "alpha")
+
+    def test_unset_sort_is_omitted(self):
+        captured = self.dir / "req.json"
+        with patch.dict(os.environ, {"TERMSCOPE_SORT": ""}):
+            self.run_main(f'cat > "{captured}"; echo \'{{"ok":true}}\'', "--open", "--terminal", "t1")
+        self.assertNotIn("--sort", json.loads(captured.read_text())["argv"])
+
     def test_float_failure(self):
         rc = self.run_main('echo \'{"ok":false,"error":"no window"}\'; exit 3', "--open", "--terminal", "t1")
         self.assertEqual(rc, 1)
@@ -193,6 +225,17 @@ class TestLauncher(FakeTools):
         env["HERDR_UI_BIN"] = ui
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(termscope_app.main(["--open"]), 1)
+
+
+class TestMods(unittest.TestCase):
+    def test_launch_keeps_env_and_closes_after_exec(self):
+        for name in ("termscope", "termscope-links"):
+            text = (ROOT / "herdr-app" / "mods" / name / "main.js").read_text()
+            self.assertNotIn('"-i"', text)
+            self.assertNotIn('"PATH=', text)
+            self.assertNotIn('"HOME=', text)
+            body = text[text.index("cx.spawn"):]
+            self.assertLess(body.index("await launch"), body.index("close()"))
 
 
 class TestKeys(unittest.TestCase):

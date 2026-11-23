@@ -86,11 +86,22 @@ def terminal_cwd(terminal: str) -> str | None:
     return None
 
 
+_SORTS = ("appearance", "alpha")
+
+
+def resolve_sort(explicit: str | None) -> str | None:
+    """Sort to forward, or None so the picker can read its own environment."""
+    if explicit in _SORTS:
+        return explicit
+    env = os.environ.get("TERMSCOPE_SORT", "").strip()
+    return env if env in _SORTS else None
+
+
 def build_float_request(
     subcommand: str,
     terminal: str,
     cwd: str,
-    sort: str = "appearance",
+    sort: str | None = None,
     script: str | None = None,
     python: str | None = None,
     television: str | None = None,
@@ -98,7 +109,9 @@ def build_float_request(
     """The `herdr-ui float` JSON request. Pure, so it can be tested."""
     argv = [python or sys.executable, script or str(HERE / "termscope"), subcommand,
             "--pane-path", cwd, "--pane-id", terminal,
-            "--multiplexer", "app", "--sort", sort]
+            "--multiplexer", "app"]
+    if sort in _SORTS:
+        argv.extend(["--sort", sort])
     if television:
         # The float may not inherit our env: pass Television explicitly.
         argv = ["/usr/bin/env", f"TERMSCOPE_TV={television}", *argv]
@@ -132,7 +145,7 @@ def launch(args: argparse.Namespace) -> int:
     cwd = args.cwd or terminal_cwd(terminal) or os.getcwd()
     request = build_float_request(
         "links" if args.open_links else "pick",
-        terminal, cwd, args.sort, television=television_bin(),
+        terminal, cwd, resolve_sort(args.sort), television=television_bin(),
     )
     env = dict(os.environ, HC_TERMINAL_ID=terminal)
     result = subprocess.run([ui, "float"], input=json.dumps(request), text=True,
@@ -152,8 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--open-links", action="store_true", help="link picker")
     parser.add_argument("--terminal", default=None)
     parser.add_argument("--cwd", default=None)
-    parser.add_argument("--sort", choices=["appearance", "alpha"],
-                        default=os.environ.get("TERMSCOPE_SORT", "appearance"))
+    parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
     return launch(parser.parse_args(argv))
 
 

@@ -597,9 +597,12 @@ class AppBackend(MultiplexerBackend):
         argv_json = json.dumps(nvim_argv)
         if settings["open_target"] == "tab":
             _pane, space = self._find_pane(pane_id)
-            kwargs = {"folder": str(pane_path), "name": "nvim", "argv": argv_json}
-            if space:
-                kwargs["space"] = space
+            if not space:
+                # tab.new needs the source space. The selected space can be a
+                # different one while the picker float is showing.
+                print(f"termscope: could not find the space of {pane_id}", file=sys.stderr)
+                sys.exit(1)
+            kwargs = {"folder": str(pane_path), "name": "nvim", "argv": argv_json, "space": space}
             label = "tab.new"
             result = self._do("tab.new", **kwargs)
         else:
