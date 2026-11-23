@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/iurysza/termscope/compare/v1.1.1...v1.2.0) (2026-11-23)
+
+
+### Features
+
+* **app:** open Termscope in Herdr.app floating panes ([0a7a613](https://github.com/iurysza/termscope/commit/0a7a613eb0fbd3b7ac401086843b25c315e35e4a))
+* **app:** open Termscope in Herdr.app floating panes ([42b8447](https://github.com/iurysza/termscope/commit/42b84476da79f87eb1c94125347d4b61cafc5afe))
+
+
+### Bug Fixes
+
+* **app:** finish the float launch before closing the overlay ([d458c35](https://github.com/iurysza/termscope/commit/d458c35004e83fbb127e19ef93951f8bad74fd7b))
+
 ## [1.1.1](https://github.com/iurysza/termscope/compare/v1.1.0...v1.1.1) (2026-11-09)
 
 
