@@ -266,12 +266,29 @@ def _has_terminal() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def open_settings() -> dict:
-    """Open-behavior settings from the Herdr plugin config directory."""
+def _app_config_path() -> Path:
+    """Settings file for Herdr.app: explicit env, plugin dir, else the legacy Herdr one."""
+    explicit = os.environ.get("TERMSCOPE_CONFIG", "").strip()
+    if explicit:
+        return Path(explicit)
+    config_dir = os.environ.get("HERDR_PLUGIN_CONFIG_DIR", "")
+    if config_dir:
+        return Path(config_dir) / "config.toml"
+    return Path.home() / ".config" / "herdr" / "plugins" / "config" / "termscope" / "config.toml"
+
+
+def open_settings(app: bool = False) -> dict:
+    """Open-behavior settings from the Herdr plugin config directory.
+
+    With app=True (Herdr.app backend) the file comes from `_app_config_path`.
+    """
     settings: dict = {"open_target": "split", "close_on_exit": False}
 
-    config_dir = os.environ.get("HERDR_PLUGIN_CONFIG_DIR", "")
-    config_path = Path(config_dir) / "config.toml" if config_dir else None
+    if app:
+        config_path: Path | None = _app_config_path()
+    else:
+        config_dir = os.environ.get("HERDR_PLUGIN_CONFIG_DIR", "")
+        config_path = Path(config_dir) / "config.toml" if config_dir else None
     if config_path and config_path.is_file():
         try:
             import tomllib
@@ -463,11 +480,162 @@ class HerdrBackend(MultiplexerBackend):
             check=False,
         )
 
+_AGENT_APPS_SHELL = ("", "shell", "zsh", "bash", "fish", "sh")
+
+
+def _tool_bin(env_name: str, which_name: str) -> str:
+    """Resolve an auxiliary CLI: env override, PATH, ~/.local/bin, bare name."""
+    configured = os.environ.get(env_name, "").strip()
+    if configured:
+        return configured
+    found = shutil.which(which_name)
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / which_name
+    if _is_executable(str(local)):
+        return str(local)
+    return which_name
+
+
+class AppBackend(MultiplexerBackend):
+    """Herdr.app: `hc` for terminals, `herdr-app` for panes and tabs.
+
+    The "pane id" passed around is the source *terminal* id (`t14x`).
+    """
+
+    @property
+    def name(self) -> str:
+        return "app"
+
+    def _hc(self) -> str:
+        return _tool_bin("HC_BIN_PATH", "hc")
+
+    def _herdr_app(self) -> str:
+        return _tool_bin("HERDR_APP_BIN_PATH", "herdr-app")
+
+    def _hc_get(self, terminal: str) -> dict:
+        try:
+            result = subprocess.run(
+                [self._hc(), "get", terminal],
+                text=True, capture_output=True, check=False,
+            )
+            if result.returncode != 0:
+                return {}
+            data = json.loads(result.stdout)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def resolve_source_pane_path(self, pane_path: Path, pane_id: str) -> Path:
+        if not pane_id:
+            return pane_path
+        data = self._hc_get(pane_id)
+        foreground = data.get("foreground")
+        candidates = [
+            foreground.get("cwd") if isinstance(foreground, dict) else None,
+            data.get("cwd"),
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate and Path(candidate).is_dir():
+                return Path(candidate)
+        return pane_path
+
+    def capture_pane_text(self, pane_id: str) -> str:
+        # `hc read --lines 0` is the visible screen. Soft-wrapped rows are not
+        # joined by hc (screen mode), so a wrapped path may arrive in two halves.
+        try:
+            result = subprocess.run(
+                [self._hc(), "read", pane_id, "--json", "--lines", "0"],
+                text=True, capture_output=True, check=False,
+            )
+            if result.returncode != 0:
+                log_event("app_capture_failed", pane_id=pane_id, stderr=result.stderr.strip())
+                return ""
+            data = json.loads(result.stdout)
+            text = data.get("text", "")
+            return text if isinstance(text, str) else ""
+        except (OSError, json.JSONDecodeError):
+            return ""
+
+    def _find_pane(self, terminal: str) -> tuple[str | None, str | None]:
+        """(pane id, space id) of a terminal from `herdr-app ls`."""
+        try:
+            result = subprocess.run(
+                [self._herdr_app(), "ls"],
+                text=True, capture_output=True, check=False,
+            )
+            data = json.loads(result.stdout)
+            for space in data.get("spaces", []):
+                for tab in space.get("tabs", []):
+                    for term in tab.get("terminals", []):
+                        if term.get("terminal") == terminal:
+                            return term.get("pane"), space.get("id")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+        return None, None
+
+    def _do(self, command: str, **kwargs: str) -> subprocess.CompletedProcess:
+        argv = [self._herdr_app(), "do", command]
+        for key, value in kwargs.items():
+            argv.extend([f"--{key}", value])
+        return subprocess.run(argv, text=True, capture_output=True, check=False)
+
+    def open_in_nvim_split(
+        self, path: Path, line: str, pane_path: Path, pane_id: str
+    ) -> NoReturn:
+        settings = open_settings(app=True)
+        nvim = _nvim_path() or "nvim"
+        nvim_argv = [nvim, f"+{line}", str(path)] if line else [nvim, str(path)]
+
+        if settings["open_target"] == "popup" and _has_terminal():
+            # The picker runs in a float with a TTY: become nvim there.
+            if not _nvim_path():
+                sys.exit("termscope: nvim not found")
+            os.chdir(pane_path)
+            os.execvp(nvim_argv[0], nvim_argv)
+
+        argv_json = json.dumps(nvim_argv)
+        if settings["open_target"] == "tab":
+            _pane, space = self._find_pane(pane_id)
+            kwargs = {"folder": str(pane_path), "name": "nvim", "argv": argv_json}
+            if space:
+                kwargs["space"] = space
+            label = "tab.new"
+            result = self._do("tab.new", **kwargs)
+        else:
+            pane, _space = self._find_pane(pane_id)
+            if not pane:
+                print(f"termscope: could not find the pane of {pane_id}", file=sys.stderr)
+                sys.exit(1)
+            label = "pane.split"
+            result = self._do("pane.split", pane=pane, direction="right", argv=argv_json)
+
+        if result.returncode != 0:
+            print(f"termscope: herdr-app {label} failed: {result.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
+    def send_annotate_command(self, pane_id: str, file_path: str) -> None:
+        quoted_path = shlex.quote(file_path)
+        app = ((self._hc_get(pane_id).get("status") or {}).get("app") or "").strip()
+        if app and app not in _AGENT_APPS_SHELL:
+            command = f"/plannotator-annotate {quoted_path}"
+        else:
+            command = f"plannotator annotate {quoted_path}"
+        subprocess.run([self._hc(), "send", pane_id, command], check=False)
+        self.show_message("Plannotator annotation requested")
+
+    def show_message(self, message: str) -> None:
+        # Herdr.app has no CLI toast; stderr is non-blocking.
+        print(f"termscope: {message}", file=sys.stderr)
+
 
 def detect_backend(pane_id: str) -> MultiplexerBackend:
     """Pick a backend from the pane id shape."""
     if pane_id and re.match(r"^(?:w[0-9A-Za-z]+:p[0-9A-Za-z]+|\d+-\d+)$", pane_id):
         return HerdrBackend()
+    if pane_id and re.match(r"^t[0-9a-z]+$", pane_id):
+        return AppBackend()
     return TmuxBackend()
 
 
@@ -476,6 +644,8 @@ def choose_backend(multiplexer: str, pane_id: str) -> MultiplexerBackend:
         return TmuxBackend()
     if multiplexer == "herdr":
         return HerdrBackend()
+    if multiplexer == "app":
+        return AppBackend()
     return detect_backend(pane_id)
 
 
@@ -1740,25 +1910,25 @@ def main() -> None:
     pick_parser = subparsers.add_parser("pick")
     pick_parser.add_argument("--pane-path", required=True)
     pick_parser.add_argument("--pane-id", required=True)
-    pick_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
+    pick_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "app", "auto"], default="auto")
     pick_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     open_parser = subparsers.add_parser("open")
     open_parser.add_argument("--mode", choices=["nvim", "default"], required=True)
     open_parser.add_argument("--pane-path", required=True)
     open_parser.add_argument("--pane-id", required=True)
-    open_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
+    open_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "app", "auto"], default="auto")
 
     scan_parser = subparsers.add_parser("scan")
     scan_parser.add_argument("--pane-path", required=True)
     scan_parser.add_argument("--pane-id", required=True)
-    scan_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
+    scan_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "app", "auto"], default="auto")
     scan_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     links_parser = subparsers.add_parser("links")
     links_parser.add_argument("--pane-path", required=True)
     links_parser.add_argument("--pane-id", required=True)
-    links_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "auto"], default="auto")
+    links_parser.add_argument("--multiplexer", choices=["tmux", "herdr", "app", "auto"], default="auto")
     links_parser.add_argument("--sort", choices=["appearance", "alpha"], default=None)
 
     preview_parser = subparsers.add_parser("preview")

@@ -6,7 +6,8 @@ Human-facing sources already in the tree:
 
 - `README.md`
 - `docs/` (`docs/publishing.md`)
-- `scripts/` (`scripts/install-dependencies.sh`)
+- `scripts/` (`scripts/install-dependencies.sh`, `scripts/install-herdr-app.sh`, `scripts/herdr_app_keys.py`)
+- `ai-artifacts/herdr-app.md` (Herdr.app backend and float flow)
 
 Deeper agent docs (context glossaries, ADRs, architecture notes) should grow in this folder when there is a real decision or term to record.
 

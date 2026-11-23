@@ -220,7 +220,34 @@ In tmux copy-mode these bindings preserve the scrolled viewport instead of
 jumping back to the live bottom of the pane. Reload tmux config after editing
 (`tmux source-file ~/.tmux.conf`, or your config path).
 
-The script also accepts `--multiplexer tmux|herdr|auto` (default `auto`).
+The script also accepts `--multiplexer tmux|herdr|app|auto` (default `auto`).
+
+## Herdr.app floating pane
+
+Termscope also runs in Herdr.app (`herdr-app` window, `hc` terminals). A key
+opens a floating pane over the focused terminal, running the same picker on
+what that terminal shows.
+
+```bash
+sh scripts/install-herdr-app.sh --dry-run   # preview
+sh scripts/install-herdr-app.sh             # install
+sh scripts/install-herdr-app.sh --uninstall # remove only what it added
+```
+
+The installer copies the picker to `~/.local/share/termscope-app`
+(`TERMSCOPE_APP_HOME`), writes two headless mods (`termscope`,
+`termscope-links`) into `~/.config/herdr-app/mods` (`HERDR_APP_HOME`), and adds
+`ctrl-shift-a` (files) and `ctrl-shift-e` (links) to `keys.json` only when those
+keys are free. It backs up `keys.json` first and never overwrites a binding.
+It needs `herdr-ui` (for the float), `hc`, `herdr-app` and Television.
+
+From any Herdr.app shell you can also run `python3 termscope_app.py --open`
+or `--open-links`.
+
+Open behaviour (`open_target` = `split`, `tab` or `popup`, and `close_on_exit`)
+reads `TERMSCOPE_CONFIG`, else `HERDR_PLUGIN_CONFIG_DIR/config.toml`, else
+`~/.config/herdr/plugins/config/termscope/config.toml`, so the legacy Herdr and
+Herdr.app share one file. `popup` opens nvim inside the float.
 
 ## Configuration
 
@@ -308,7 +335,7 @@ is set.
 ## Development
 
 ```bash
-python3 -m py_compile termscope termscope_herdr.py
+python3 -m py_compile termscope termscope_herdr.py termscope_app.py scripts/herdr_app_keys.py
 python3 -m unittest discover -s tests
 herdr plugin link "$PWD"
 herdr plugin action invoke termscope.open
