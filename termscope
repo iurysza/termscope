@@ -815,7 +815,18 @@ class RexBackend(MultiplexerBackend):
                 stderr=(result.stderr or "").strip()[:500],
             )
             return ""
-        return result.stdout
+        return self._visible_rows(block, result.stdout)
+
+    def _visible_rows(self, block: str, text: str) -> str:
+        """Keep the last `rows` lines: capture adds scrollback, the block shows `rows`."""
+        size = self._api("block.method", {"block_id": block, "method": "size"})
+        rows = size.get("rows")
+        if not isinstance(rows, int) or rows <= 0:
+            return text
+        lines = text.splitlines()
+        if len(lines) <= rows:
+            return text
+        return "\n".join(lines[-rows:]) + "\n"
 
     def _nvim_argv(self, path: Path, line: str) -> list[str]:
         nvim = _nvim_path() or "nvim"

@@ -15,7 +15,7 @@ Rex (Rex Beta.app) is a separate backend from tmux, legacy Herdr, and Herdr.app.
 The pane id is the source block id. Inside the layer, `REX_BLOCK` is the layer's own block, so capture and open use `--pane-id`, not `REX_BLOCK`.
 
 - cwd: the same `pwd` then `process` lookup as the launcher.
-- screen: `rex capture -s SESSION -b BLOCK --trim --unwrap`. This is the screen plus the scrollback. There is no public flag for the visible rows only. `--unwrap` joins soft-wrapped lines. A 15s timeout returns empty text, and the picker then falls back to the repo list.
+- screen: `rex capture -s SESSION -b BLOCK --trim --unwrap`. This is the screen plus the scrollback, so the backend keeps the last `rows` lines from the block's `size` method (verified on Rex 0.1.0-preview.21: `{"columns":80,"rows":24,...}`). `--unwrap` joins soft-wrapped lines. A 15s timeout returns empty text, and the picker then falls back to the repo list.
 - open: `open_target` from the Herdr.app settings path (`TERMSCOPE_CONFIG`, else the plugin file). `split` is `rex split --split=right`. `tab` is `rex run` (a new window). `popup` execs nvim in the layer when the picker has a TTY. `close_on_exit` false adds `--keep-open`.
 - annotate: `rex send` then `rex send-key enter`. A foreground name of `pi`, `opencode`, `claude`, or `codex`, or an empty name, sends `/plannotator-annotate`. Any other name runs `plannotator annotate`.
 - messages: stderr.
@@ -23,6 +23,6 @@ The pane id is the source block id. Inside the layer, `REX_BLOCK` is the layer's
 
 ## What Rex can and cannot do
 
-`rex capture` and `com.superlogical.terminal.format` both return terminal text. The CLI documents capture as the screen and the scrollback. `format` is described as the current screen, and people who have run `rex api describe` report the same formatting flags (`format`, `unwrap`, `trim`) with no viewport or scroll-offset field. This backend uses `rex capture` and does not clip the output to a guessed number of rows.
+`rex capture` and `com.superlogical.terminal.format` both return terminal text. The CLI documents capture as the screen and the scrollback. `format` is described as the current screen, and people who have run `rex api describe` report the same formatting flags (`format`, `unwrap`, `trim`) with no viewport or scroll-offset field. This backend uses `rex capture` and clips it to the row count from `size`.
 
 A file opens in a new block (`rex split`, `rex run`) or in the picker layer (`popup`). A URL opens with the system opener, the same path the other backends use. Rex has no method that opens an arbitrary URL inside a block.

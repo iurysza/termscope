@@ -78,6 +78,12 @@ if method == "session.describe_block":
             "block": {"window_id": "window:abc", "block_id": "block:src"},
         }))
     raise SystemExit(0)
+if method == "block.method":
+    rows = os.environ.get("REX_FAKE_ROWS")
+    if not rows:
+        fail("no size", 1)
+    sys.stdout.write(json.dumps({"columns": 80, "rows": int(rows)}))
+    raise SystemExit(0)
 if method == "session.view":
     block = os.environ.get("REX_BLOCK", "block:src")
     sys.stdout.write(json.dumps({"windows": [{
@@ -231,6 +237,13 @@ class TestRexBackend(RexFake):
         self.assertIn("--trim", argv)
         self.assertIn("--unwrap", argv)
         self.assertNotIn("--lines", argv)
+
+    def test_capture_keeps_only_visible_rows(self):
+        os.environ["REX_FAKE_SCREEN"] = "old/scrolled.py\nsrc/a.py\nsrc/b.py\n"
+        os.environ["REX_FAKE_ROWS"] = "2"
+        self.assertEqual(ts.RexBackend().capture_pane_text("block:src"), "src/a.py\nsrc/b.py\n")
+        size = json.loads(self.records()[1]["stdin"])
+        self.assertEqual(size, {"block_id": "block:src", "method": "size"})
 
     def test_capture_failure_is_empty(self):
         os.environ["REX_FAKE_CAPTURE_FAIL"] = "1"

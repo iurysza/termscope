@@ -271,10 +271,9 @@ python3 termscope_rex.py --open-links
 ```
 
 The picker reads the block with `rex capture -b "$REX_BLOCK" --trim --unwrap`.
-That command prints the screen and the scrollback. Rex has no flag for the
-visible rows alone, so a path that has scrolled off can still show up in the
-list. While a full-screen program is running, Rex returns only the screen that
-program is showing.
+That command prints the screen and the scrollback, so termscope keeps only the
+last rows that the block shows (its `size` method). A path that has scrolled off
+is not listed.
 
 With `--multiplexer auto`, a pane id that starts with `block:` selects Rex.
 `REX_SESSION` and `REX_BLOCK` also select Rex when the pane id is empty or
