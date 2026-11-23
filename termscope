@@ -804,6 +804,10 @@ def merge_link_candidates(candidates: list[str], screen_text: str) -> list[str]:
 # File indexing
 # --------------------------------------------------------------------------- #
 
+# Bound scan cost and picker startup time on very large repositories.
+MAX_INDEXED_PATHS = 5000
+
+
 def list_repo_files(search_root: Path) -> list[str]:
     # Skip home directory — too large to index.
     home = Path.home()
@@ -826,6 +830,9 @@ def list_repo_files(search_root: Path) -> list[str]:
                 "--follow",
                 "--exclude",
                 ".git",
+                # Stop at the cap: listing a huge tree only to drop most of it is slow.
+                "--max-results",
+                str(MAX_INDEXED_PATHS),
                 ".",
             ],
             cwd=search_root,
@@ -841,8 +848,7 @@ def list_repo_files(search_root: Path) -> list[str]:
     if result.returncode != 0:
         return []
     lines = [ln.rstrip("\n") for ln in result.stdout.splitlines() if ln.rstrip("\n")]
-    # Bound scan cost and picker startup time on very large repositories.
-    return lines[:5000]
+    return lines[:MAX_INDEXED_PATHS]
 
 
 # --------------------------------------------------------------------------- #

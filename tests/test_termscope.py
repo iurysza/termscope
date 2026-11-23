@@ -2378,5 +2378,23 @@ class TestLinkPickerCopy(unittest.TestCase):
         message.assert_not_called()
 
 
+class TestListRepoFiles(unittest.TestCase):
+    def test_fd_stops_at_the_index_cap(self):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="a.py\nsrc/\n")
+
+        with tempfile.TemporaryDirectory() as root, \
+             patch.object(tfp.subprocess, "run", side_effect=fake_run):
+            files = tfp.list_repo_files(Path(root))
+
+        self.assertEqual(files, ["a.py", "src/"])
+        cap = seen["argv"].index("--max-results")
+        self.assertEqual(seen["argv"][cap + 1], str(tfp.MAX_INDEXED_PATHS))
+        self.assertEqual(seen["argv"][-1], ".")
+
+
 if __name__ == "__main__":
     unittest.main()
