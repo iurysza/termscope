@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/iurysza/termscope/compare/v1.3.0...v1.3.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **rex:** find fd, bat and nvim with Rex's server PATH ([#41](https://github.com/iurysza/termscope/issues/41)) ([0f95df0](https://github.com/iurysza/termscope/commit/0f95df0a34fde7560badbd6c4f8335cc4775c8c4))
+
 ## [1.3.0](https://github.com/iurysza/termscope/compare/v1.2.0...v1.3.0) (2026-11-23)
 
 
