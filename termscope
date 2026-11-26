@@ -1372,6 +1372,37 @@ def _is_executable(path: str) -> bool:
     return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+def _tool_dirs() -> list[str]:
+    """Directories that hold fd, bat, nvim and tv outside a login shell."""
+    home = Path.home()
+    dirs: list[str] = []
+    prefix = os.environ.get("HOMEBREW_PREFIX", "").strip()
+    if prefix:
+        dirs.append(str(Path(prefix) / "bin"))
+    dirs.extend([
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        str(home / ".local" / "bin"),
+        str(home / ".local" / "share" / "mise" / "shims"),
+        str(home / ".cargo" / "bin"),
+    ])
+    return dirs
+
+
+def ensure_tool_path() -> None:
+    """Append missing tool directories to PATH.
+
+    Rex runs key actions and floating layers with the server's PATH
+    (/usr/bin:/bin:/usr/sbin:/sbin), and Herdr popups can omit Homebrew too.
+    Without this, `fd` is not found, the repo index is empty and every pick
+    ends in "No files found in repo". Existing entries keep their order.
+    """
+    current = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    extra = [d for d in _tool_dirs() if d not in current and os.path.isdir(d)]
+    if extra:
+        os.environ["PATH"] = os.pathsep.join(current + list(dict.fromkeys(extra)))
+
+
 def _television_path_file() -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
     return Path(config_home) / "termscope" / _TELEVISION_PATH_FILE
@@ -2231,6 +2262,7 @@ def main() -> None:
     preview_parser.add_argument("target")
 
     args = parser.parse_args()
+    ensure_tool_path()
     log_event("start", command=args.command, argv=sys.argv[1:])
 
     if args.command == "pick":

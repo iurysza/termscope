@@ -2400,3 +2400,44 @@ class TestListRepoFiles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEnsureToolPath(unittest.TestCase):
+    def test_appends_missing_tool_dirs_after_existing_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            brew = Path(tmp, "brew", "bin")
+            brew.mkdir(parents=True)
+            env = {"PATH": "/usr/bin:/bin", "HOMEBREW_PREFIX": str(brew.parent), "HOME": tmp}
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(tfp.Path, "home", return_value=Path(tmp)):
+                tfp.ensure_tool_path()
+                parts = os.environ["PATH"].split(os.pathsep)
+        self.assertEqual(parts[:2], ["/usr/bin", "/bin"])
+        self.assertIn(str(brew), parts)
+
+    def test_skips_missing_dirs_and_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            brew = Path(tmp, "brew", "bin")
+            brew.mkdir(parents=True)
+            env = {"PATH": f"{brew}:/usr/bin", "HOMEBREW_PREFIX": str(brew.parent), "HOME": tmp}
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(tfp.Path, "home", return_value=Path(tmp)):
+                tfp.ensure_tool_path()
+                parts = os.environ["PATH"].split(os.pathsep)
+        self.assertEqual(parts.count(str(brew)), 1)
+        self.assertNotIn(str(Path(tmp, ".cargo", "bin")), parts)
+
+    def test_fd_found_with_server_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp, "brew", "bin")
+            bindir.mkdir(parents=True)
+            fd = bindir / "fd"
+            fd.write_text("#!/bin/sh\necho a.txt\n")
+            fd.chmod(0o755)
+            repo = Path(tmp, "repo")
+            repo.mkdir()
+            env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOMEBREW_PREFIX": str(bindir.parent)}
+            with patch.dict(os.environ, env, clear=True):
+                self.assertEqual(tfp.list_repo_files(repo), [])
+                tfp.ensure_tool_path()
+                self.assertEqual(tfp.list_repo_files(repo), ["a.txt"])

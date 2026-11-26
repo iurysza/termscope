@@ -288,7 +288,10 @@ URLs open with the system opener (`open` on macOS).
 
 A Rex key runs outside the terminal's environment, so pass the session and
 block from the action context. `python3` must be on the PATH that `rex.exec`
-uses, and the `termscope_rex.py` path below must be the copy you run:
+uses, and the `termscope_rex.py` path below must be the copy you run. Rex runs
+actions and layers with its server PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), so
+the picker appends Homebrew, `~/.local/bin`, mise shims and `~/.cargo/bin` to
+PATH to find `fd`, `bat`, `nvim` and `tv`:
 
 ```lua
 local script = os.getenv("HOME") .. "/src/termscope/termscope_rex.py"
